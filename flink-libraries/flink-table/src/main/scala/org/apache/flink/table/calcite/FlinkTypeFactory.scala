@@ -18,6 +18,9 @@
 
 package org.apache.flink.table.calcite
 
+import java.util
+import java.nio.charset.Charset
+
 import org.apache.calcite.avatica.util.TimeUnit
 import org.apache.calcite.jdbc.JavaTypeFactoryImpl
 import org.apache.calcite.rel.`type`._
@@ -25,11 +28,12 @@ import org.apache.calcite.sql.SqlIntervalQualifier
 import org.apache.calcite.sql.`type`.SqlTypeName._
 import org.apache.calcite.sql.`type`.{BasicSqlType, SqlTypeName}
 import org.apache.calcite.sql.parser.SqlParserPos
+import org.apache.calcite.util.ConversionUtil
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo._
 import org.apache.flink.api.common.typeinfo._
 import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.api.java.typeutils.ValueTypeInfo._
-import org.apache.flink.api.java.typeutils.{MapTypeInfo, ObjectArrayTypeInfo, RowTypeInfo}
+import org.apache.flink.api.java.typeutils.{MapTypeInfo, MultisetTypeInfo, ObjectArrayTypeInfo, RowTypeInfo}
 import org.apache.flink.table.api.TableException
 import org.apache.flink.table.calcite.FlinkTypeFactory.typeInfoToSqlTypeName
 import org.apache.flink.table.plan.schema._
@@ -147,6 +151,13 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem) extends JavaTypeFactoryImp
           createTypeFromTypeInfo(oa.getComponentInfo, isNullable = true),
           isNullable)
 
+      case mts: MultisetTypeInfo[_] =>
+        new MultisetRelDataType(
+          mts,
+          createTypeFromTypeInfo(mts.getElementTypeInfo, isNullable = true),
+          isNullable
+        )
+
       case mp: MapTypeInfo[_, _] =>
         new MapRelDataType(
           mp,
@@ -172,45 +183,20 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem) extends JavaTypeFactoryImp
     *
     * @param fieldNames field names
     * @param fieldTypes field types, every element is Flink's [[TypeInformation]]
-    * @param rowtime optional system field to indicate event-time; the index determines the index
-    *                in the final record. If the index is smaller than the number of specified
-    *                fields, it shifts all following fields.
-    * @param proctime optional system field to indicate processing-time; the index determines the
-    *                 index in the final record. If the index is smaller than the number of
-    *                 specified fields, it shifts all following fields.
     * @return a struct type with the input fieldNames, input fieldTypes, and system fields
     */
   def buildLogicalRowType(
       fieldNames: Seq[String],
-      fieldTypes: Seq[TypeInformation[_]],
-      rowtime: Option[(Int, String)],
-      proctime: Option[(Int, String)])
+      fieldTypes: Seq[TypeInformation[_]])
     : RelDataType = {
     val logicalRowTypeBuilder = builder
 
     val fields = fieldNames.zip(fieldTypes)
-
-    var totalNumberOfFields = fields.length
-    if (rowtime.isDefined) {
-      totalNumberOfFields += 1
-    }
-    if (proctime.isDefined) {
-      totalNumberOfFields += 1
-    }
-
-    var addedTimeAttributes = 0
-    for (i <- 0 until totalNumberOfFields) {
-      if (rowtime.isDefined && rowtime.get._1 == i) {
-        logicalRowTypeBuilder.add(rowtime.get._2, createRowtimeIndicatorType())
-        addedTimeAttributes += 1
-      } else if (proctime.isDefined && proctime.get._1 == i) {
-        logicalRowTypeBuilder.add(proctime.get._2, createProctimeIndicatorType())
-        addedTimeAttributes += 1
-      } else {
-        val field = fields(i - addedTimeAttributes)
-        logicalRowTypeBuilder.add(field._1, createTypeFromTypeInfo(field._2, isNullable = true))
-      }
-    }
+    fields.foreach(f => {
+      // time indicators are not nullable
+      val nullable = !FlinkTypeFactory.isTimeIndicatorType(f._2)
+      logicalRowTypeBuilder.add(f._1, createTypeFromTypeInfo(f._2, nullable))
+    })
 
     logicalRowTypeBuilder.build
   }
@@ -236,6 +222,25 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem) extends JavaTypeFactoryImp
     canonize(relType)
   }
 
+  override def createMapType(keyType: RelDataType, valueType: RelDataType): RelDataType = {
+    val relType = new MapRelDataType(
+      new MapTypeInfo(
+        FlinkTypeFactory.toTypeInfo(keyType),
+        FlinkTypeFactory.toTypeInfo(valueType)),
+      keyType,
+      valueType,
+      isNullable = false)
+    this.canonize(relType)
+  }
+
+  override def createMultisetType(elementType: RelDataType, maxCardinality: Long): RelDataType = {
+    val relType = new MultisetRelDataType(
+      MultisetTypeInfo.getInfoFor(FlinkTypeFactory.toTypeInfo(elementType)),
+      elementType,
+      isNullable = false)
+    canonize(relType)
+  }
+
   override def createTypeWithNullability(
       relDataType: RelDataType,
       isNullable: Boolean): RelDataType = {
@@ -257,6 +262,9 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem) extends JavaTypeFactoryImp
       case map: MapRelDataType =>
         new MapRelDataType(map.typeInfo, map.keyType, map.valueType, isNullable)
 
+      case multiSet: MultisetRelDataType =>
+        new MultisetRelDataType(multiSet.typeInfo, multiSet.getComponentType, isNullable)
+
       case generic: GenericRelDataType =>
         new GenericRelDataType(generic.typeInfo, isNullable, typeSystem)
 
@@ -268,6 +276,47 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem) extends JavaTypeFactoryImp
     }
 
     canonize(newType)
+  }
+
+  override def leastRestrictive(types: util.List[RelDataType]): RelDataType = {
+    val type0 = types.get(0)
+    if (type0.getSqlTypeName != null) {
+      val resultType = resolveAllIdenticalTypes(types)
+      if (resultType.isDefined) {
+        // result type for identical types
+        return resultType.get
+      }
+    }
+    // fall back to super
+    super.leastRestrictive(types)
+  }
+
+  private def resolveAllIdenticalTypes(types: util.List[RelDataType]): Option[RelDataType] = {
+    val allTypes = types.asScala
+
+    val head = allTypes.head
+    // check if all types are the same
+    if (allTypes.forall(_ == head)) {
+      // types are the same, check nullability
+      val nullable = allTypes
+        .exists(sqlType => sqlType.isNullable || sqlType.getSqlTypeName == SqlTypeName.NULL)
+      // return type with nullability
+      Some(createTypeWithNullability(head, nullable))
+    } else {
+      // types are not all the same
+      if (allTypes.exists(_.getSqlTypeName == SqlTypeName.ANY)) {
+        // one of the type was ANY.
+        // we cannot generate a common type if it differs from other types.
+        throw TableException("Generic ANY types must have a common type information.")
+      } else {
+        // cannot resolve a common type for different input types
+        None
+      }
+    }
+  }
+
+  override def getDefaultCharset: Charset = {
+    Charset.forName(ConversionUtil.NATIVE_UTF16_CHARSET_NAME)
   }
 }
 
@@ -385,8 +434,12 @@ object FlinkTypeFactory {
       val compositeRelDataType = relDataType.asInstanceOf[CompositeRelDataType]
       compositeRelDataType.compositeType
 
-    // ROW and CURSOR for UDTF case, whose type info will never be used, just a placeholder
-    case ROW | CURSOR => new NothingTypeInfo
+    case ROW if relDataType.isInstanceOf[RelRecordType] =>
+      val relRecordType = relDataType.asInstanceOf[RelRecordType]
+      new RowSchema(relRecordType).typeInfo
+
+    // CURSOR for UDTF case, whose type info will never be used, just a placeholder
+    case CURSOR => new NothingTypeInfo
 
     case ARRAY if relDataType.isInstanceOf[ArrayRelDataType] =>
       val arrayRelDataType = relDataType.asInstanceOf[ArrayRelDataType]
@@ -395,6 +448,10 @@ object FlinkTypeFactory {
     case MAP if relDataType.isInstanceOf[MapRelDataType] =>
       val mapRelDataType = relDataType.asInstanceOf[MapRelDataType]
       mapRelDataType.typeInfo
+
+    case MULTISET if relDataType.isInstanceOf[MultisetRelDataType] =>
+      val multisetRelDataType = relDataType.asInstanceOf[MultisetRelDataType]
+      multisetRelDataType.typeInfo
 
     case _@t =>
       throw TableException(s"Type is not supported: $t")

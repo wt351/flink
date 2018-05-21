@@ -24,10 +24,11 @@ import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.runtime.akka.AkkaUtils;
+import org.apache.flink.runtime.blob.PermanentBlobService;
+import org.apache.flink.runtime.blob.VoidBlobWriter;
 import org.apache.flink.runtime.checkpoint.StandaloneCheckpointRecoveryFactory;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
-import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.failover.FailoverRegion;
@@ -40,15 +41,15 @@ import org.apache.flink.runtime.instance.HardwareDescription;
 import org.apache.flink.runtime.instance.Instance;
 import org.apache.flink.runtime.instance.InstanceID;
 import org.apache.flink.runtime.instance.SimpleSlot;
-import org.apache.flink.runtime.instance.SlotProvider;
+import org.apache.flink.runtime.jobmaster.slotpool.SlotProvider;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobmanager.scheduler.Scheduler;
-import org.apache.flink.runtime.jobmanager.slots.AllocatedSlot;
-import org.apache.flink.runtime.jobmanager.slots.SlotOwner;
+import org.apache.flink.runtime.instance.SimpleSlotContext;
+import org.apache.flink.runtime.jobmaster.SlotOwner;
 import org.apache.flink.runtime.jobmanager.slots.TaskManagerGateway;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.TaskMessages.CancelTask;
@@ -59,25 +60,29 @@ import org.apache.flink.runtime.testingUtils.TestingUtils;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
 import org.apache.flink.util.SerializedValue;
 
+import akka.actor.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+import java.lang.reflect.Field;
+import java.net.InetAddress;
+import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeoutException;
 
 import scala.concurrent.ExecutionContext;
 import scala.concurrent.ExecutionContext$;
 
-import java.lang.reflect.Field;
-import java.net.InetAddress;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeoutException;
-
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
-
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 
 /**
- * A collection of utility methods for testing the ExecutionGraph and its related classes. 
+ * A collection of utility methods for testing the ExecutionGraph and its related classes.
  */
 public class ExecutionGraphTestUtils {
 
@@ -89,10 +94,10 @@ public class ExecutionGraphTestUtils {
 
 	/**
 	 * Waits until the job has reached a certain state.
-	 * 
+	 *
 	 * <p>This method is based on polling and might miss very fast state transitions!
 	 */
-	public static void waitUntilJobStatus(ExecutionGraph eg, JobStatus status, long maxWaitMillis) 
+	public static void waitUntilJobStatus(ExecutionGraph eg, JobStatus status, long maxWaitMillis)
 			throws TimeoutException {
 
 		checkNotNull(eg);
@@ -103,7 +108,7 @@ public class ExecutionGraphTestUtils {
 		final long deadline = maxWaitMillis == 0 ? Long.MAX_VALUE : System.nanoTime() + (maxWaitMillis * 1_000_000);
 
 		while (eg.getState() != status && System.nanoTime() < deadline) {
-			try { 
+			try {
 				Thread.sleep(2);
 			} catch (InterruptedException ignored) {}
 		}
@@ -198,7 +203,8 @@ public class ExecutionGraphTestUtils {
 		// check that all execution are in state DEPLOYING
 		for (ExecutionVertex ev : eg.getAllExecutionVertices()) {
 			final Execution exec = ev.getCurrentExecutionAttempt();
-			assert(exec.getState() == ExecutionState.DEPLOYING);
+			final ExecutionState executionState = exec.getState();
+			assert executionState == ExecutionState.DEPLOYING : "Expected executionState to be DEPLOYING, was: " + executionState;
 		}
 
 		// switch executions to RUNNING
@@ -226,15 +232,10 @@ public class ExecutionGraphTestUtils {
 	}
 	
 	public static void setVertexResource(ExecutionVertex vertex, SimpleSlot slot) {
-		try {
-			Execution exec = vertex.getCurrentExecutionAttempt();
-			
-			Field f = Execution.class.getDeclaredField("assignedResource");
-			f.setAccessible(true);
-			f.set(exec, slot);
-		}
-		catch (Exception e) {
-			throw new RuntimeException("Modifying the slot failed", e);
+		Execution exec = vertex.getCurrentExecutionAttempt();
+
+		if(!exec.tryAssignResource(slot)) {
+			throw new RuntimeException("Could not assign resource.");
 		}
 	}
 
@@ -242,19 +243,20 @@ public class ExecutionGraphTestUtils {
 	//  Mocking Slots
 	// ------------------------------------------------------------------------
 
-	public static SimpleSlot createMockSimpleSlot(JobID jid, TaskManagerGateway gateway) {
+	public static SimpleSlot createMockSimpleSlot(TaskManagerGateway gateway) {
 		final TaskManagerLocation location = new TaskManagerLocation(
 				ResourceID.generate(), InetAddress.getLoopbackAddress(), 6572);
 
-		final AllocatedSlot allocatedSlot = new AllocatedSlot(
-				new AllocationID(),
-				jid,
-				location,
-				0,
-				ResourceProfile.UNKNOWN,
-				gateway);
+		final SimpleSlotContext allocatedSlot = new SimpleSlotContext(
+			new AllocationID(),
+			location,
+			0,
+			gateway);
 
-		return new SimpleSlot(allocatedSlot, mock(SlotOwner.class), 0);
+		return new SimpleSlot(
+			allocatedSlot,
+			mock(SlotOwner.class),
+			0);
 	}
 
 	// ------------------------------------------------------------------------
@@ -280,7 +282,7 @@ public class ExecutionGraphTestUtils {
 
 	/**
 	 * Creates an execution graph containing the given vertices.
-	 * 
+	 *
 	 * <p>The execution graph uses {@link NoRestartStrategy} as the restart strategy.
 	 */
 	public static ExecutionGraph createSimpleTestGraph(JobID jid, JobVertex... vertices) throws Exception {
@@ -322,24 +324,38 @@ public class ExecutionGraphTestUtils {
 			ScheduledExecutorService executor,
 			JobVertex... vertices) throws Exception {
 
+			return createExecutionGraph(jid, slotProvider, restartStrategy, executor, Time.seconds(10L), vertices);
+	}
+
+	public static ExecutionGraph createExecutionGraph(
+			JobID jid,
+			SlotProvider slotProvider,
+			RestartStrategy restartStrategy,
+			ScheduledExecutorService executor,
+			Time timeout,
+			JobVertex... vertices) throws Exception {
+
 		checkNotNull(jid);
 		checkNotNull(restartStrategy);
 		checkNotNull(vertices);
+		checkNotNull(timeout);
 
 		return ExecutionGraphBuilder.buildGraph(
-				null,
-				new JobGraph(jid, "test job", vertices),
-				new Configuration(),
-				executor,
-				executor,
-				slotProvider,
-				ExecutionGraphTestUtils.class.getClassLoader(),
-				new StandaloneCheckpointRecoveryFactory(),
-				Time.seconds(10),
-				restartStrategy,
-				new UnregisteredMetricsGroup(),
-				1,
-				TEST_LOGGER);
+			null,
+			new JobGraph(jid, "test job", vertices),
+			new Configuration(),
+			executor,
+			executor,
+			slotProvider,
+			ExecutionGraphTestUtils.class.getClassLoader(),
+			new StandaloneCheckpointRecoveryFactory(),
+			timeout,
+			restartStrategy,
+			new UnregisteredMetricsGroup(),
+			1,
+			VoidBlobWriter.getInstance(),
+			timeout,
+			TEST_LOGGER);
 	}
 
 	public static JobVertex createNoOpVertex(int parallelism) {
@@ -368,8 +384,7 @@ public class ExecutionGraphTestUtils {
 
 	@SuppressWarnings("serial")
 	public static class SimpleActorGateway extends BaseTestingActorGateway {
-		
-		public TaskDeploymentDescriptor lastTDD;
+
 
 		public SimpleActorGateway(ExecutionContext executionContext){
 			super(executionContext);
@@ -379,7 +394,6 @@ public class ExecutionGraphTestUtils {
 		public Object handleMessage(Object message) {
 			if (message instanceof SubmitTask) {
 				SubmitTask submitTask = (SubmitTask) message;
-				lastTDD = submitTask.tasks();
 				return Acknowledge.get();
 			} else if(message instanceof CancelTask) {
 				return Acknowledge.get();
@@ -387,6 +401,35 @@ public class ExecutionGraphTestUtils {
 				return new Object();
 			} else {
 				return null;
+			}
+		}
+	}
+
+	@SuppressWarnings("serial")
+	public static class SimpleActorGatewayWithTDD extends SimpleActorGateway {
+
+		public TaskDeploymentDescriptor lastTDD;
+		private final PermanentBlobService blobCache;
+
+		public SimpleActorGatewayWithTDD(ExecutionContext executionContext, PermanentBlobService blobCache) {
+			super(executionContext);
+			this.blobCache = blobCache;
+		}
+
+		@Override
+		public Object handleMessage(Object message) {
+			if(message instanceof SubmitTask) {
+				SubmitTask submitTask = (SubmitTask) message;
+				lastTDD = submitTask.tasks();
+				try {
+					lastTDD.loadBigData(blobCache);
+					return Acknowledge.get();
+				} catch (Exception e) {
+					e.printStackTrace();
+					return new Status.Failure(e);
+				}
+			} else {
+				return super.handleMessage(message);
 			}
 		}
 	}
@@ -437,5 +480,78 @@ public class ExecutionGraphTestUtils {
 	
 	public static ExecutionJobVertex getExecutionVertex(JobVertexID id) throws Exception {
 		return getExecutionVertex(id, TestingUtils.defaultExecutor());
+	}
+
+	// ------------------------------------------------------------------------
+	//  graph vertex verifications
+	// ------------------------------------------------------------------------
+
+	/**
+	 * Verifies the generated {@link ExecutionJobVertex} for a given {@link JobVertex} in a {@link ExecutionGraph}
+	 *
+	 * @param executionGraph the generated execution graph
+	 * @param originJobVertex the vertex to verify for
+	 * @param inputJobVertices upstream vertices of the verified vertex, used to check inputs of generated vertex
+	 * @param outputJobVertices downstream vertices of the verified vertex, used to
+	 *                          check produced data sets of generated vertex
+	 */
+	public static void verifyGeneratedExecutionJobVertex(
+			ExecutionGraph executionGraph,
+			JobVertex originJobVertex,
+			@Nullable List<JobVertex> inputJobVertices,
+			@Nullable List<JobVertex> outputJobVertices) {
+
+		ExecutionJobVertex ejv = executionGraph.getAllVertices().get(originJobVertex.getID());
+		assertNotNull(ejv);
+
+		// verify basic properties
+		assertEquals(originJobVertex.getParallelism(), ejv.getParallelism());
+		assertEquals(executionGraph.getJobID(), ejv.getJobId());
+		assertEquals(originJobVertex.getID(), ejv.getJobVertexId());
+		assertEquals(originJobVertex, ejv.getJobVertex());
+
+		// verify produced data sets
+		if (outputJobVertices == null) {
+			assertEquals(0, ejv.getProducedDataSets().length);
+		} else {
+			assertEquals(outputJobVertices.size(), ejv.getProducedDataSets().length);
+			for (int i = 0; i < outputJobVertices.size(); i++) {
+				assertEquals(originJobVertex.getProducedDataSets().get(i).getId(), ejv.getProducedDataSets()[i].getId());
+				assertEquals(originJobVertex.getParallelism(), ejv.getProducedDataSets()[0].getPartitions().length);
+			}
+		}
+
+		// verify task vertices for their basic properties and their inputs
+		assertEquals(originJobVertex.getParallelism(), ejv.getTaskVertices().length);
+
+		int subtaskIndex = 0;
+		for (ExecutionVertex ev : ejv.getTaskVertices()) {
+			assertEquals(executionGraph.getJobID(), ev.getJobId());
+			assertEquals(originJobVertex.getID(), ev.getJobvertexId());
+
+			assertEquals(originJobVertex.getParallelism(), ev.getTotalNumberOfParallelSubtasks());
+			assertEquals(subtaskIndex, ev.getParallelSubtaskIndex());
+
+			if (inputJobVertices == null) {
+				assertEquals(0, ev.getNumberOfInputs());
+			} else {
+				assertEquals(inputJobVertices.size(), ev.getNumberOfInputs());
+
+				for (int i = 0; i < inputJobVertices.size(); i++) {
+					ExecutionEdge[] inputEdges = ev.getInputEdges(i);
+					assertEquals(inputJobVertices.get(i).getParallelism(), inputEdges.length);
+
+					int expectedPartitionNum = 0;
+					for (ExecutionEdge inEdge : inputEdges) {
+						assertEquals(i, inEdge.getInputNum());
+						assertEquals(expectedPartitionNum, inEdge.getSource().getPartitionNumber());
+
+						expectedPartitionNum++;
+					}
+				}
+			}
+
+			subtaskIndex++;
+		}
 	}
 }

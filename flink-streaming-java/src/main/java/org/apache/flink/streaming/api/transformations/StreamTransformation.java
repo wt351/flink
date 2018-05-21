@@ -19,6 +19,7 @@
 package org.apache.flink.streaming.api.transformations;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.InvalidTypesException;
 import org.apache.flink.api.common.operators.ResourceSpec;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -30,6 +31,7 @@ import org.apache.flink.util.Preconditions;
 
 import java.util.Collection;
 
+import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -198,7 +200,9 @@ public abstract class StreamTransformation<T> {
 	 * @param parallelism The new parallelism to set on this {@code StreamTransformation}.
 	 */
 	public void setParallelism(int parallelism) {
-		Preconditions.checkArgument(parallelism > 0, "Parallelism must be bigger than zero.");
+		Preconditions.checkArgument(
+				parallelism > 0 || parallelism == ExecutionConfig.PARALLELISM_DEFAULT,
+				"The parallelism must be at least one, or ExecutionConfig.PARALLELISM_DEFAULT (use system default).");
 		this.parallelism = parallelism;
 	}
 
@@ -391,13 +395,18 @@ public abstract class StreamTransformation<T> {
 	public abstract void setChainingStrategy(ChainingStrategy strategy);
 
 	/**
-	 * Set the buffer timeout of this {@code StreamTransformation}. The timeout is used when
-	 * sending elements over the network. The timeout specifies how long a network buffer
-	 * should be kept waiting before sending. A higher timeout means that more elements will
-	 * be sent in one buffer, this increases throughput. The latency, however, is negatively
-	 * affected by a higher timeout.
+	 * Set the buffer timeout of this {@code StreamTransformation}. The timeout defines how long data
+	 * may linger in a partially full buffer before being sent over the network.
+	 *
+	 * <p>Lower timeouts lead to lower tail latencies, but may affect throughput.
+	 * For Flink 1.5+, timeouts of 1ms are feasible for jobs with high parallelism.
+	 *
+	 * <p>A value of -1 means that the default buffer timeout should be used. A value
+	 * of zero indicates that no buffering should happen, and all records/events should be
+	 * immediately sent through the network, without additional buffering.
 	 */
 	public void setBufferTimeout(long bufferTimeout) {
+		checkArgument(bufferTimeout >= -1);
 		this.bufferTimeout = bufferTimeout;
 	}
 

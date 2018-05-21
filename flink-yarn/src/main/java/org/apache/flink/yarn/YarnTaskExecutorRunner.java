@@ -21,10 +21,12 @@ package org.apache.flink.yarn;
 import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.configuration.SecurityOptions;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.security.SecurityConfiguration;
 import org.apache.flink.runtime.security.SecurityUtils;
 import org.apache.flink.runtime.taskexecutor.TaskManagerRunner;
 import org.apache.flink.runtime.util.EnvironmentInformation;
@@ -32,7 +34,6 @@ import org.apache.flink.runtime.util.JvmShutdownSafeguard;
 import org.apache.flink.runtime.util.SignalHandler;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
 import org.slf4j.Logger;
@@ -97,17 +98,16 @@ public class YarnTaskExecutorRunner {
 			LOG.info("TM: remote keytab principal obtained {}", remoteKeytabPrincipal);
 
 			final Configuration configuration = GlobalConfiguration.loadConfiguration(currDir);
-			FileSystem.setDefaultScheme(configuration);
+			FileSystem.initialize(configuration);
 
 			// configure local directory
-			String flinkTempDirs = configuration.getString(ConfigConstants.TASK_MANAGER_TMP_DIR_KEY, null);
-			if (flinkTempDirs == null) {
-				LOG.info("Setting directories for temporary file " + localDirs);
-				configuration.setString(ConfigConstants.TASK_MANAGER_TMP_DIR_KEY, localDirs);
+			if (configuration.contains(CoreOptions.TMP_DIRS)) {
+				LOG.info("Overriding YARN's temporary file directories with those " +
+					"specified in the Flink config: " + configuration.getValue(CoreOptions.TMP_DIRS));
 			}
 			else {
-				LOG.info("Overriding YARN's temporary file directories with those " +
-						"specified in the Flink config: " + flinkTempDirs);
+				LOG.info("Setting directories for temporary files to: {}", localDirs);
+				configuration.setString(CoreOptions.TMP_DIRS, localDirs);
 			}
 
 			// tell akka to die in case of an error
@@ -125,29 +125,12 @@ public class YarnTaskExecutorRunner {
 			LOG.info("YARN daemon is running as: {} Yarn client user obtainer: {}",
 					currentUser.getShortUserName(), yarnClientUsername);
 
-			org.apache.hadoop.conf.Configuration hadoopConfiguration = null;
-
-			//To support Yarn Secure Integration Test Scenario
-			File krb5Conf = new File(currDir, Utils.KRB5_FILE_NAME);
-			if (krb5Conf.exists() && krb5Conf.canRead()) {
-				String krb5Path = krb5Conf.getAbsolutePath();
-				LOG.info("KRB5 Conf: {}", krb5Path);
-				hadoopConfiguration = new org.apache.hadoop.conf.Configuration();
-				hadoopConfiguration.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION, "kerberos");
-				hadoopConfiguration.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, "true");
-			}
-
-			SecurityUtils.SecurityConfiguration sc;
-			if (hadoopConfiguration != null) {
-				sc = new SecurityUtils.SecurityConfiguration(configuration, hadoopConfiguration);
-			} else {
-				sc = new SecurityUtils.SecurityConfiguration(configuration);
-			}
-
 			if (keytabPath != null && remoteKeytabPrincipal != null) {
 				configuration.setString(SecurityOptions.KERBEROS_LOGIN_KEYTAB, keytabPath);
 				configuration.setString(SecurityOptions.KERBEROS_LOGIN_PRINCIPAL, remoteKeytabPrincipal);
 			}
+
+			SecurityConfiguration sc = new SecurityConfiguration(configuration);
 
 			final String containerId = ENV.get(YarnFlinkResourceManager.ENV_FLINK_CONTAINER_ID);
 			Preconditions.checkArgument(containerId != null,

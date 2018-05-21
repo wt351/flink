@@ -21,11 +21,13 @@ package org.apache.flink.runtime.jobgraph;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.cache.DistributedCache;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.blob.BlobClient;
-import org.apache.flink.runtime.blob.BlobKey;
+import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
+import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.SerializedValue;
 
 import java.io.IOException;
@@ -34,6 +36,7 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -98,8 +101,11 @@ public class JobGraph implements Serializable {
 	/** Set of JAR files required to run this job. */
 	private final List<Path> userJars = new ArrayList<Path>();
 
+	/** Set of custom files required to run this job. */
+	private final Map<String, DistributedCache.DistributedCacheEntry> userArtifacts = new HashMap<>();
+
 	/** Set of blob keys identifying the JAR files required to run this job. */
-	private final List<BlobKey> userJarBlobKeys = new ArrayList<BlobKey>();
+	private final List<PermanentBlobKey> userJarBlobKeys = new ArrayList<>();
 
 	/** List of classpaths required to run this job. */
 	private List<URL> classpaths = Collections.emptyList();
@@ -267,7 +273,7 @@ public class JobGraph implements Serializable {
 	 * Sets the execution config. This method eagerly serialized the ExecutionConfig for future RPC
 	 * transport. Further modification of the referenced ExecutionConfig object will not affect
 	 * this serialized copy.
-	 * 
+	 *
 	 * @param executionConfig The ExecutionConfig to be serialized.
 	 * @throws IOException Thrown if the serialization of the ExecutionConfig fails
 	 */
@@ -489,12 +495,35 @@ public class JobGraph implements Serializable {
 	}
 
 	/**
+	 * Adds the path of a custom file required to run the job on a task manager.
+	 *
+	 * @param name a name under which this artifact will be accessible through {@link DistributedCache}
+	 * @param file path of a custom file required to run the job on a task manager
+	 */
+	public void addUserArtifact(String name, DistributedCache.DistributedCacheEntry file) {
+		if (file == null) {
+			throw new IllegalArgumentException();
+		}
+
+		userArtifacts.putIfAbsent(name, file);
+	}
+
+	/**
+	 * Gets the list of assigned user jar paths.
+	 *
+	 * @return The list of assigned user jar paths
+	 */
+	public Map<String, DistributedCache.DistributedCacheEntry> getUserArtifacts() {
+		return userArtifacts;
+	}
+
+	/**
 	 * Adds the BLOB referenced by the key to the JobGraph's dependencies.
 	 *
 	 * @param key
 	 *        path of the JAR file required to run the job on a task manager
 	 */
-	public void addBlob(BlobKey key) {
+	public void addUserJarBlobKey(PermanentBlobKey key) {
 		if (key == null) {
 			throw new IllegalArgumentException();
 		}
@@ -518,7 +547,7 @@ public class JobGraph implements Serializable {
 	 *
 	 * @return set of BLOB keys referring to the JAR files required to run this job
 	 */
-	public List<BlobKey> getUserJarBlobKeys() {
+	public List<PermanentBlobKey> getUserJarBlobKeys() {
 		return this.userJarBlobKeys;
 	}
 
@@ -535,10 +564,10 @@ public class JobGraph implements Serializable {
 			InetSocketAddress blobServerAddress,
 			Configuration blobClientConfig) throws IOException {
 		if (!userJars.isEmpty()) {
-			// TODO: make use of job-related BLOBs after adapting the BlobLibraryCacheManager
-			List<BlobKey> blobKeys = BlobClient.uploadJarFiles(blobServerAddress, blobClientConfig, jobID, userJars);
+			List<PermanentBlobKey> blobKeys = BlobClient.uploadFiles(
+				blobServerAddress, blobClientConfig, jobID, userJars);
 
-			for (BlobKey blobKey : blobKeys) {
+			for (PermanentBlobKey blobKey : blobKeys) {
 				if (!userJarBlobKeys.contains(blobKey)) {
 					userJarBlobKeys.add(blobKey);
 				}
@@ -549,5 +578,25 @@ public class JobGraph implements Serializable {
 	@Override
 	public String toString() {
 		return "JobGraph(jobId: " + jobID + ")";
+	}
+
+	public void uploadUserArtifacts(InetSocketAddress blobServerAddress, Configuration clientConfig) throws IOException {
+		if (!userArtifacts.isEmpty()) {
+			try (BlobClient blobClient = new BlobClient(blobServerAddress, clientConfig)) {
+				for (Map.Entry<String, DistributedCache.DistributedCacheEntry> userArtifact : userArtifacts.entrySet()) {
+
+					final PermanentBlobKey key = blobClient.uploadFile(jobID,
+						new Path(userArtifact.getValue().filePath));
+
+					DistributedCache.writeFileInfoToConfig(
+						userArtifact.getKey(),
+						new DistributedCache.DistributedCacheEntry(
+							userArtifact.getValue().filePath,
+							userArtifact.getValue().isExecutable,
+							InstantiationUtil.serializeObject(key)),
+						jobConfiguration);
+				}
+			}
+		}
 	}
 }

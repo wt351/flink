@@ -19,6 +19,7 @@
 package org.apache.flink.table.utils
 
 import org.apache.calcite.plan.RelOptUtil
+import org.apache.calcite.rel.RelNode
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.java.{DataSet => JDataSet, ExecutionEnvironment => JExecutionEnvironment}
 import org.apache.flink.api.scala.{DataSet, ExecutionEnvironment}
@@ -27,7 +28,7 @@ import org.apache.flink.streaming.api.datastream.{DataStream => JDataStream}
 import org.apache.flink.streaming.api.environment.{StreamExecutionEnvironment => JStreamExecutionEnvironment}
 import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
 import org.apache.flink.table.api.scala._
-import org.apache.flink.table.api.{Table, TableEnvironment}
+import org.apache.flink.table.api.{Table, TableEnvironment, TableSchema}
 import org.apache.flink.table.expressions.Expression
 import org.apache.flink.table.functions.{AggregateFunction, ScalarFunction, TableFunction}
 import org.junit.Assert.assertEquals
@@ -81,10 +82,26 @@ abstract class TableTestUtil {
 
   def verifyTable(resultTable: Table, expected: String): Unit
 
+  def verifySchema(resultTable: Table, fields: Seq[(String, TypeInformation[_])]): Unit = {
+    val actual = resultTable.getSchema
+    val expected = new TableSchema(fields.map(_._1).toArray, fields.map(_._2).toArray)
+    assertEquals(expected, actual)
+  }
+
   // the print methods are for debugging purposes only
   def printTable(resultTable: Table): Unit
 
   def printSql(query: String): Unit
+
+  protected def verifyString(expected: String, optimized: RelNode) {
+    val actual = RelOptUtil.toString(optimized)
+    // we remove the charset for testing because it
+    // depends on the native machine (Little/Big Endian)
+    val actualNoCharset = actual.replace("_UTF-16LE'", "'").replace("_UTF-16BE'", "'")
+    assertEquals(
+      expected.split("\n").map(_.trim).mkString("\n"),
+      actualNoCharset.split("\n").map(_.trim).mkString("\n"))
+  }
 }
 
 object TableTestUtil {
@@ -125,7 +142,6 @@ object TableTestUtil {
   def streamTableNode(idx: Int): String = {
     s"DataStreamScan(table=[[_DataStreamTable_$idx]])"
   }
-
 }
 
 case class BatchTableTestUtil() extends TableTestUtil {
@@ -178,16 +194,23 @@ case class BatchTableTestUtil() extends TableTestUtil {
   }
 
   def verifySql(query: String, expected: String): Unit = {
-    verifyTable(tableEnv.sql(query), expected)
+    verifyTable(tableEnv.sqlQuery(query), expected)
   }
 
   def verifyTable(resultTable: Table, expected: String): Unit = {
     val relNode = resultTable.getRelNode
     val optimized = tableEnv.optimize(relNode)
-    val actual = RelOptUtil.toString(optimized)
-    assertEquals(
-      expected.split("\n").map(_.trim).mkString("\n"),
-      actual.split("\n").map(_.trim).mkString("\n"))
+    verifyString(expected, optimized)
+  }
+
+  def verifyJavaSql(query: String, expected: String): Unit = {
+    verifyJavaTable(javaTableEnv.sqlQuery(query), expected)
+  }
+
+  def verifyJavaTable(resultTable: Table, expected: String): Unit = {
+    val relNode = resultTable.getRelNode
+    val optimized = javaTableEnv.optimize(relNode)
+    verifyString(expected, optimized)
   }
 
   def printTable(resultTable: Table): Unit = {
@@ -197,13 +220,11 @@ case class BatchTableTestUtil() extends TableTestUtil {
   }
 
   def printSql(query: String): Unit = {
-    printTable(tableEnv.sql(query))
+    printTable(tableEnv.sqlQuery(query))
   }
-
 }
 
 case class StreamTableTestUtil() extends TableTestUtil {
-
   val javaEnv = mock(classOf[JStreamExecutionEnvironment])
   when(javaEnv.getStreamTimeCharacteristic).thenReturn(TimeCharacteristic.EventTime)
   val javaTableEnv = TableEnvironment.getTableEnvironment(javaEnv)
@@ -256,16 +277,23 @@ case class StreamTableTestUtil() extends TableTestUtil {
   }
 
   def verifySql(query: String, expected: String): Unit = {
-    verifyTable(tableEnv.sql(query), expected)
+    verifyTable(tableEnv.sqlQuery(query), expected)
   }
 
   def verifyTable(resultTable: Table, expected: String): Unit = {
     val relNode = resultTable.getRelNode
     val optimized = tableEnv.optimize(relNode, updatesAsRetraction = false)
-    val actual = RelOptUtil.toString(optimized)
-    assertEquals(
-      expected.split("\n").map(_.trim).mkString("\n"),
-      actual.split("\n").map(_.trim).mkString("\n"))
+    verifyString(expected, optimized)
+  }
+
+  def verifyJavaSql(query: String, expected: String): Unit = {
+    verifyJavaTable(javaTableEnv.sqlQuery(query), expected)
+  }
+
+  def verifyJavaTable(resultTable: Table, expected: String): Unit = {
+    val relNode = resultTable.getRelNode
+    val optimized = javaTableEnv.optimize(relNode, updatesAsRetraction = false)
+    verifyString(expected, optimized)
   }
 
   // the print methods are for debugging purposes only
@@ -276,7 +304,6 @@ case class StreamTableTestUtil() extends TableTestUtil {
   }
 
   def printSql(query: String): Unit = {
-    printTable(tableEnv.sql(query))
+    printTable(tableEnv.sqlQuery(query))
   }
-
 }

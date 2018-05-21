@@ -30,12 +30,11 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SplitStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.async.AsyncFunction;
+import org.apache.flink.streaming.api.functions.async.ResultFuture;
 import org.apache.flink.streaming.api.functions.async.RichAsyncFunction;
-import org.apache.flink.streaming.api.functions.async.collector.AsyncCollector;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import org.apache.flink.streaming.util.StreamingMultipleProgramsTestBase;
-
+import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.MathUtils;
 
@@ -55,7 +54,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Integration tests for streaming operators.
  */
-public class StreamingOperatorsITCase extends StreamingMultipleProgramsTestBase {
+public class StreamingOperatorsITCase extends AbstractTestBase {
 
 	/**
 	 * Tests the proper functioning of the streaming fold operator. For this purpose, a stream
@@ -243,11 +242,11 @@ public class StreamingOperatorsITCase extends StreamingMultipleProgramsTestBase 
 
 			@Override
 			public void asyncInvoke(final Tuple2<Integer, NonSerializable> input,
-									final AsyncCollector<Integer> collector) throws Exception {
+									final ResultFuture<Integer> resultFuture) throws Exception {
 				executorService.submit(new Runnable() {
 					@Override
 					public void run() {
-						collector.collect(Collections.singletonList(input.f0 + input.f0));
+						resultFuture.complete(Collections.singletonList(input.f0 + input.f0));
 					}
 				});
 			}

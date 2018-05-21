@@ -84,13 +84,13 @@ The following figure visualizes the relationship of streams, dynamic tables, and
 
 In the following, we will explain the concepts of dynamic tables and continuous queries with a stream of click events that have the following schema:
 
-```
+{% highlight plain %}
 [ 
   user:  VARCHAR,   // the name of the user
   cTime: TIMESTAMP, // the time when the URL was accessed
   url:   VARCHAR    // the URL that was accessed by the user
 ]
-```
+{% endhighlight %}
 
 ### Defining a Table on a Stream
 
@@ -336,7 +336,7 @@ val windowedTable = tEnv
 
 ### Event time
 
-Event time allows a table program to produce results based on the time that is contained in every record. This allows for consistent results even in case of out-of-order events or late events. It also ensures replayable results of the table program when reading records from persistent storage. 
+Event time allows a table program to produce results based on the time that is contained in every record. This allows for consistent results even in case of out-of-order events or late events. It also ensures replayable results of the table program when reading records from persistent storage.
 
 Additionally, event time allows for unified syntax for table programs in both batch and streaming environments. A time attribute in a streaming environment can be a regular field of a record in a batch environment.
 
@@ -344,19 +344,16 @@ In order to handle out-of-order events and distinguish between on-time and late 
 
 An event time attribute can be defined either during DataStream-to-Table conversion or by using a TableSource. 
 
-The Table API & SQL assume that in both cases timestamps and watermarks have been generated in the [underlying DataStream API]({{ site.baseurl }}/dev/event_timestamps_watermarks.html) before. Ideally, this happens within a `TableSource` with knowledge about the incoming data's characteristics and is hidden from the end user of the API.
-
-
 #### During DataStream-to-Table Conversion
 
-The event time attribute is defined with the `.rowtime` property during schema definition. 
+The event time attribute is defined with the `.rowtime` property during schema definition. [Timestamps and watermarks]({{ site.baseurl }}/dev/event_time.html) must have been assigned in the `DataStream` that is converted.
 
-Timestamps and watermarks must have been assigned in the `DataStream` that is converted.
+There are two ways of defining the time attribute when converting a `DataStream` into a `Table`. Depending on whether the specified `.rowtime` field name exists in the schema of the `DataStream` or not, the timestamp field is either 
 
-There are two ways of defining the time attribute when converting a `DataStream` into a `Table`:
+- appended as a new field to the schema or
+- replaces an existing field.
 
-- Extending the physical schema by an additional logical field
-- Replacing a physical field by a logical field (e.g. because it is no longer needed after timestamp extraction).
+In either case the event time timestamp field will hold the value of the `DataStream` event time timestamp.
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -365,7 +362,7 @@ There are two ways of defining the time attribute when converting a `DataStream`
 // Option 1:
 
 // extract timestamp and assign watermarks based on knowledge of the stream
-DataStream<Tuple3<String, String>> stream = inputStream.assignTimestampsAndWatermarks(...);
+DataStream<Tuple2<String, String>> stream = inputStream.assignTimestampsAndWatermarks(...);
 
 // declare an additional logical field as an event time attribute
 Table table = tEnv.fromDataStream(stream, "Username, Data, UserActionTime.rowtime");
@@ -415,9 +412,9 @@ val windowedTable = table.window(Tumble over 10.minutes on 'UserActionTime as 'u
 
 #### Using a TableSource
 
-The event time attribute is defined by a `TableSource` that implements the `DefinedRowtimeAttribute` interface. The logical time attribute is appended to the physical schema defined by the return type of the `TableSource`.
+The event time attribute is defined by a `TableSource` that implements the `DefinedRowtimeAttribute` interface. The `getRowtimeAttribute()` method returns the name of an existing field that carries the event time attribute of the table and is of type `LONG` or `TIMESTAMP`.
 
-Timestamps and watermarks must be assigned in the stream that is returned by the `getDataStream()` method.
+Moreover, the `DataStream` returned by the `getDataStream()` method must have watermarks assigned that are aligned with the defined time attribute. Please note that the timestamps of the `DataStream` (the ones which are assigned by a `TimestampAssigner`) are ignored. Only the values of the `TableSource`'s rowtime attribute are relevant.
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -427,8 +424,9 @@ public class UserActionSource implements StreamTableSource<Row>, DefinedRowtimeA
 
 	@Override
 	public TypeInformation<Row> getReturnType() {
-		String[] names = new String[] {"Username" , "Data"};
-		TypeInformation[] types = new TypeInformation[] {Types.STRING(), Types.STRING()};
+		String[] names = new String[] {"Username", "Data", "UserActionTime"};
+		TypeInformation[] types = 
+		    new TypeInformation[] {Types.STRING(), Types.STRING(), Types.LONG()};
 		return Types.ROW(names, types);
 	}
 
@@ -436,14 +434,14 @@ public class UserActionSource implements StreamTableSource<Row>, DefinedRowtimeA
 	public DataStream<Row> getDataStream(StreamExecutionEnvironment execEnv) {
 		// create stream 
 		// ...
-		// extract timestamp and assign watermarks based on knowledge of the stream
+		// assign watermarks based on the "UserActionTime" attribute
 		DataStream<Row> stream = inputStream.assignTimestampsAndWatermarks(...);
 		return stream;
 	}
 
 	@Override
 	public String getRowtimeAttribute() {
-		// field with this name will be appended as a third field 
+		// Mark the "UserActionTime" attribute as event-time attribute.
 		return "UserActionTime";
 	}
 }
@@ -462,21 +460,21 @@ WindowedTable windowedTable = tEnv
 class UserActionSource extends StreamTableSource[Row] with DefinedRowtimeAttribute {
 
 	override def getReturnType = {
-		val names = Array[String]("Username" , "Data")
-		val types = Array[TypeInformation[_]](Types.STRING, Types.STRING)
+		val names = Array[String]("Username" , "Data", "UserActionTime")
+		val types = Array[TypeInformation[_]](Types.STRING, Types.STRING, Types.LONG)
 		Types.ROW(names, types)
 	}
 
 	override def getDataStream(execEnv: StreamExecutionEnvironment): DataStream[Row] = {
 		// create stream 
 		// ...
-		// extract timestamp and assign watermarks based on knowledge of the stream
+		// assign watermarks based on the "UserActionTime" attribute
 		val stream = inputStream.assignTimestampsAndWatermarks(...)
 		stream
 	}
 
 	override def getRowtimeAttribute = {
-		// field with this name will be appended as a third field
+		// Mark the "UserActionTime" attribute as event-time attribute.
 		"UserActionTime"
 	}
 }
@@ -551,7 +549,7 @@ val stream: DataStream[Row] = result.toAppendStream[Row](qConfig)
 </div>
 </div>
 
-In the the following we describe the parameters of the `QueryConfig` and how they affect the accuracy and resource consumption of a query.
+In the following we describe the parameters of the `QueryConfig` and how they affect the accuracy and resource consumption of a query.
 
 ### Idle State Retention Time
 
@@ -559,9 +557,9 @@ Many queries aggregate or join records on one or more key attributes. When such 
 
 For example the following query computes the number of clicks per session.
 
-```
+{% highlight sql %}
 SELECT sessionId, COUNT(*) FROM clicks GROUP BY sessionId;
-```
+{% endhighlight %}
 
 The `sessionId` attribute is used as a grouping key and the continuous query maintains a count for each `sessionId` it observes. The `sessionId` attribute is evolving over time and `sessionId` values are only active until the session ends, i.e., for a limited period of time. However, the continuous query cannot know about this property of `sessionId` and expects that every `sessionId` value can occur at any point of time. It maintains a count for each observed `sessionId` value. Consequently, the total state size of the query is continuously growing as more and more `sessionId` values are observed. 
 

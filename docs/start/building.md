@@ -33,28 +33,30 @@ In order to build Flink you need the source code. Either [download the source of
 
 In addition you need **Maven 3** and a **JDK** (Java Development Kit). Flink requires **at least Java 8** to build.
 
-*NOTE: Maven 3.3.x can build Flink, but will not properly shade away certain dependencies. Maven 3.0.3 creates the libraries properly.
+*NOTE: Maven 3.3.x can build Flink, but will not properly shade away certain dependencies. Maven 3.2.5 creates the libraries properly.
 To build unit tests use Java 8u51 or above to prevent failures in unit tests that use the PowerMock runner.*
 
 To clone from git, enter:
 
-~~~bash
+{% highlight bash %}
 git clone {{ site.github_url }}
-~~~
+{% endhighlight %}
 
 The simplest way of building Flink is by running:
 
-~~~bash
+{% highlight bash %}
 mvn clean install -DskipTests
-~~~
+{% endhighlight %}
 
-This instructs [Maven](http://maven.apache.org) (`mvn`) to first remove all existing builds (`clean`) and then create a new Flink binary (`install`). The `-DskipTests` command prevents Maven from executing the tests.
+This instructs [Maven](http://maven.apache.org) (`mvn`) to first remove all existing builds (`clean`) and then create a new Flink binary (`install`).
 
-The default build includes the YARN Client for Hadoop 2.
+To speed up the build you can skip tests, checkstyle, and JavaDocs: `mvn clean install -DskipTests -Dmaven.javadoc.skip=true -Dcheckstyle.skip=true`.
+
+The default build adds a Flink-specific JAR for Hadoop 2, to allow using Flink with HDFS and YARN.
 
 ## Dependency Shading
 
-Flink [shades away](https://maven.apache.org/plugins/maven-shade-plugin/) some of the libraries it uses, in order to avoid version clashes with user programs that use different versions of these libraries. Among the shaded libraries are *Google Guava*, *Asm*, *Apache Curator*, *Apache HTTP Components*, and others.
+Flink [shades away](https://maven.apache.org/plugins/maven-shade-plugin/) some of the libraries it uses, in order to avoid version clashes with user programs that use different versions of these libraries. Among the shaded libraries are *Google Guava*, *Asm*, *Apache Curator*, *Apache HTTP Components*, *Netty*, and others.
 
 The dependency shading mechanism was recently changed in Maven and requires users to build Flink slightly differently, depending on their Maven version:
 
@@ -64,11 +66,11 @@ It is sufficient to call `mvn clean install -DskipTests` in the root directory o
 **Maven 3.3.x**
 The build has to be done in two steps: First in the base directory, then in the distribution project:
 
-~~~bash
+{% highlight bash %}
 mvn clean install -DskipTests
 cd flink-dist
 mvn clean install
-~~~
+{% endhighlight %}
 
 *Note:* To check your Maven version, run `mvn --version`.
 
@@ -80,30 +82,20 @@ mvn clean install
 
 Flink has dependencies to HDFS and YARN which are both dependencies from [Apache Hadoop](http://hadoop.apache.org). There exist many different versions of Hadoop (from both the upstream project and the different Hadoop distributions). If you are using a wrong combination of versions, exceptions can occur.
 
-Hadoop is only supported from version 2.3.0 upwards.
+Hadoop is only supported from version 2.4.0 upwards.
 You can also specify a specific Hadoop version to build against:
 
-~~~bash
+{% highlight bash %}
 mvn clean install -DskipTests -Dhadoop.version=2.6.1
-~~~
-
-#### Before Hadoop 2.3.0
-
-Hadoop 2.x versions are only supported with YARN features from version 2.3.0 upwards. If you want to use a version lower than 2.3.0, you can exclude the YARN support using the following extra build arguments: `-P!include-yarn`.
-
-For example, if you want to build Flink for Hadoop `2.2.0`, use the following command:
-
-~~~bash
-mvn clean install -Dhadoop.version=2.2.0 -P!include-yarn
-~~~
+{% endhighlight %}
 
 ### Vendor-specific Versions
 
 To build Flink against a vendor specific Hadoop version, issue the following command:
 
-~~~bash
+{% highlight bash %}
 mvn clean install -DskipTests -Pvendor-repos -Dhadoop.version=2.6.1-cdh5.0.0
-~~~
+{% endhighlight %}
 
 The `-Pvendor-repos` activates a Maven [build profile](http://maven.apache.org/guides/introduction/introduction-to-profiles.html) that includes the repositories of popular Hadoop vendors such as Cloudera, Hortonworks, or MapR.
 
@@ -115,18 +107,9 @@ The `-Pvendor-repos` activates a Maven [build profile](http://maven.apache.org/g
 
 Flink has APIs, libraries, and runtime modules written in [Scala](http://scala-lang.org). Users of the Scala API and libraries may have to match the Scala version of Flink with the Scala version of their projects (because Scala is not strictly backwards compatible).
 
-**By default, Flink is built with the Scala 2.11**. To build Flink with Scala *2.10*, you can change the default Scala *binary version* by using *scala-2.10* build profile:
+Flink 1.4 currently builds only with Scala version 2.11.
 
-~~~bash
-# Build with Scala version 2.10
-mvn clean install -DskipTests -Pscala-2.10
-~~~
-
-To build against custom Scala versions, you need to define new custom build profile that will override *scala.version* and *scala.binary.version* values.
-
-Flink is developed against Scala *2.11* and tested additionally against Scala *2.10*. These two versions are known to be compatible. Earlier versions (like Scala *2.9*) are *not* compatible.
-
-Newer versions may be compatible, depending on breaking changes in the language features used by Flink, and the availability of Flink's dependencies in those Scala versions. The dependencies written in Scala include for example *Kafka*, *Akka*, *Scalatest*, and *scopt*.
+We are working on supporting Scala 2.12, but certain breaking changes in Scala 2.12 make this a more involved effort. Please check out [this JIRA issue](https://issues.apache.org/jira/browse/FLINK-7811) for updates.
 
 {% top %}
 
@@ -136,12 +119,12 @@ If your home directory is encrypted you might encounter a `java.io.IOException: 
 
 The workaround is to add:
 
-~~~xml
+{% highlight xml %}
 <args>
     <arg>-Xmax-classfile-name</arg>
     <arg>128</arg>
 </args>
-~~~
+{% endhighlight %}
 
 in the compiler configuration of the `pom.xml` file of the module causing the error. For example, if the error appears in the `flink-yarn` module, the above code should be added under the `<configuration>` tag of `scala-maven-plugin`. See [this issue](https://issues.apache.org/jira/browse/FLINK-2003) for more information.
 

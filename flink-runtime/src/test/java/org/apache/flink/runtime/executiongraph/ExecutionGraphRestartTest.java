@@ -31,17 +31,17 @@ import org.apache.flink.runtime.concurrent.ScheduledExecutor;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.execution.SuppressRestartsException;
 import org.apache.flink.runtime.executiongraph.restart.FixedDelayRestartStrategy;
+import org.apache.flink.runtime.executiongraph.restart.InfiniteDelayRestartStrategy;
 import org.apache.flink.runtime.executiongraph.restart.NoRestartStrategy;
 import org.apache.flink.runtime.executiongraph.restart.RestartCallback;
 import org.apache.flink.runtime.executiongraph.restart.RestartStrategy;
-import org.apache.flink.runtime.executiongraph.restart.InfiniteDelayRestartStrategy;
 import org.apache.flink.runtime.executiongraph.utils.NotCancelAckingTaskGateway;
 import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGateway;
 import org.apache.flink.runtime.executiongraph.utils.SimpleSlotProvider;
 import org.apache.flink.runtime.instance.HardwareDescription;
 import org.apache.flink.runtime.instance.Instance;
 import org.apache.flink.runtime.instance.InstanceID;
-import org.apache.flink.runtime.instance.SlotProvider;
+import org.apache.flink.runtime.jobmaster.slotpool.SlotProvider;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.DistributionPattern;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -64,9 +64,6 @@ import org.apache.flink.util.TestLogger;
 import org.junit.After;
 import org.junit.Test;
 
-import scala.concurrent.duration.Deadline;
-import scala.concurrent.duration.FiniteDuration;
-
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.Iterator;
@@ -76,7 +73,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+
+import scala.concurrent.duration.Deadline;
+import scala.concurrent.duration.FiniteDuration;
 
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.SimpleActorGateway;
 import static org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.completeCancellingForAllVertices;
@@ -89,9 +90,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-
 import static org.mockito.Mockito.spy;
-
 
 public class ExecutionGraphRestartTest extends TestLogger {
 
@@ -472,7 +471,7 @@ public class ExecutionGraphRestartTest extends TestLogger {
 			v.getCurrentExecutionAttempt().fail(new Exception("Test Exception"));
 		}
 
-		assertEquals(JobStatus.CANCELED, eg.getState());
+		assertEquals(JobStatus.CANCELED, eg.getTerminationFuture().get());
 
 		Execution execution = eg.getAllExecutionVertices().iterator().next().getCurrentExecutionAttempt();
 
@@ -589,15 +588,19 @@ public class ExecutionGraphRestartTest extends TestLogger {
 	public void testConcurrentLocalFailAndRestart() throws Exception {
 		final int parallelism = 10;
 		SimpleAckingTaskManagerGateway taskManagerGateway = new SimpleAckingTaskManagerGateway();
+		final OneShotLatch restartLatch = new OneShotLatch();
+		final TriggeredRestartStrategy triggeredRestartStrategy = new TriggeredRestartStrategy(restartLatch);
 
 		final ExecutionGraph eg = createSimpleTestGraph(
 			new JobID(),
 			taskManagerGateway,
-			new FixedDelayRestartStrategy(10, 0L),
+			triggeredRestartStrategy,
 			createNoOpVertex(parallelism));
 
 		WaitForTasks waitForTasks = new WaitForTasks(parallelism);
-		taskManagerGateway.setCondition(waitForTasks);
+		WaitForTasks waitForTasksCancelled = new WaitForTasks(parallelism);
+		taskManagerGateway.setSubmitConsumer(waitForTasks);
+		taskManagerGateway.setCancelConsumer(waitForTasksCancelled);
 
 		eg.setScheduleMode(ScheduleMode.EAGER);
 		eg.scheduleForExecution();
@@ -646,9 +649,16 @@ public class ExecutionGraphRestartTest extends TestLogger {
 		waitUntilJobStatus(eg, JobStatus.FAILING, 1000);
 
 		WaitForTasks waitForTasksAfterRestart = new WaitForTasks(parallelism);
-		taskManagerGateway.setCondition(waitForTasksAfterRestart);
+		taskManagerGateway.setSubmitConsumer(waitForTasksAfterRestart);
+
+		waitForTasksCancelled.getFuture().get(1000L, TimeUnit.MILLISECONDS);
 
 		completeCancellingForAllVertices(eg);
+
+		// block the restart until we have completed for all vertices the cancellation
+		// otherwise it might happen that the last vertex which failed will have a new
+		// execution set due to restart which is wrongly canceled
+		restartLatch.trigger();
 
 		waitUntilJobStatus(eg, JobStatus.RUNNING, 1000);
 
@@ -675,7 +685,7 @@ public class ExecutionGraphRestartTest extends TestLogger {
 		final ExecutionGraph eg = createSimpleTestGraph(jid, slots, restartStrategy, vertex);
 
 		WaitForTasks waitForTasks = new WaitForTasks(parallelism);
-		taskManagerGateway.setCondition(waitForTasks);
+		taskManagerGateway.setSubmitConsumer(waitForTasks);
 
 		eg.setScheduleMode(ScheduleMode.EAGER);
 		eg.scheduleForExecution();
@@ -689,7 +699,7 @@ public class ExecutionGraphRestartTest extends TestLogger {
 		assertEquals(JobStatus.FAILING, eg.getState());
 
 		WaitForTasks waitForTasksRestart = new WaitForTasks(parallelism);
-		taskManagerGateway.setCondition(waitForTasksRestart);
+		taskManagerGateway.setSubmitConsumer(waitForTasksRestart);
 
 		completeCancellingForAllVertices(eg);
 		waitUntilJobStatus(eg, JobStatus.RESTARTING, 1000);
@@ -740,7 +750,7 @@ public class ExecutionGraphRestartTest extends TestLogger {
 			new JobID(), scheduler, new FixedDelayRestartStrategy(Integer.MAX_VALUE, 0), executor, source, sink);
 
 		WaitForTasks waitForTasks = new WaitForTasks(parallelism * 2);
-		taskManagerGateway.setCondition(waitForTasks);
+		taskManagerGateway.setSubmitConsumer(waitForTasks);
 
 		eg.setScheduleMode(ScheduleMode.EAGER);
 		eg.scheduleForExecution();
@@ -756,7 +766,7 @@ public class ExecutionGraphRestartTest extends TestLogger {
 		assertEquals(JobStatus.FAILING, eg.getState());
 
 		WaitForTasks waitForTasksAfterRestart = new WaitForTasks(parallelism * 2);
-		taskManagerGateway.setCondition(waitForTasksAfterRestart);
+		taskManagerGateway.setSubmitConsumer(waitForTasksAfterRestart);
 
 		completeCancellingForAllVertices(eg);
 
@@ -806,7 +816,7 @@ public class ExecutionGraphRestartTest extends TestLogger {
 
 		waitUntilJobStatus(eg, JobStatus.FAILED, 1000);
 
-		final Throwable t = eg.getFailureCause().getException();
+		final Throwable t = eg.getFailureCause();
 		if (!(t instanceof NoResourceAvailableException)) {
 			ExceptionUtils.rethrowException(t, t.getMessage());
 		}
@@ -1048,11 +1058,12 @@ public class ExecutionGraphRestartTest extends TestLogger {
 
 		private final int tasksToWaitFor;
 		private final CompletableFuture<Boolean> allTasksReceived;
-		private int counter;
+		private final AtomicInteger counter;
 
 		public WaitForTasks(int tasksToWaitFor) {
 			this.tasksToWaitFor = tasksToWaitFor;
 			this.allTasksReceived = new CompletableFuture<>();
+			this.counter = new AtomicInteger();
 		}
 
 		public CompletableFuture<Boolean> getFuture() {
@@ -1061,9 +1072,7 @@ public class ExecutionGraphRestartTest extends TestLogger {
 
 		@Override
 		public void accept(ExecutionAttemptID executionAttemptID) {
-			counter++;
-
-			if (counter >= tasksToWaitFor) {
+			if (counter.incrementAndGet() >= tasksToWaitFor) {
 				allTasksReceived.complete(true);
 			}
 		}

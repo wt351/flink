@@ -2,7 +2,7 @@
 title: "Custom Serialization for Managed State"
 nav-title: "Custom Serialization"
 nav-parent_id: streaming_state
-nav-pos: 10
+nav-pos: 6
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -61,7 +61,7 @@ val descriptor = new ListStateDescriptor[(String, Integer)](
     new CustomTypeSerializer)
 )
 
-checkpointedState = getRuntimeContext.getListState(descriptor);
+checkpointedState = getRuntimeContext.getListState(descriptor)
 {% endhighlight %}
 </div>
 </div>
@@ -186,3 +186,5 @@ fundamental components to compatibility checks on upgraded serializers and would
 is not present. Since configuration snapshots are written to checkpoints using custom serialization, the implementation
 of the class is free to be changed, as long as compatibility of the configuration change is handled using the versioning
 mechanisms in `TypeSerializerConfigSnapshot`.
+
+{% top %}

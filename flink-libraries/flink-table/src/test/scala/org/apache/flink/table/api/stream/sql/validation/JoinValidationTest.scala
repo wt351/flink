@@ -30,16 +30,6 @@ class JoinValidationTest extends TableTestBase {
   streamUtil.addTable[(Int, String, Long)]("MyTable", 'a, 'b, 'c.rowtime, 'proctime.proctime)
   streamUtil.addTable[(Int, String, Long)]("MyTable2", 'a, 'b, 'c.rowtime, 'proctime.proctime)
 
-  /** There should exist time conditions **/
-  @Test(expected = classOf[TableException])
-  def testWindowJoinUnExistTimeCondition() = {
-    val sql =
-      """
-        |SELECT t2.a
-        |FROM MyTable t1 JOIN MyTable2 t2 ON t1.a = t2.a""".stripMargin
-    streamUtil.verifySql(sql, "n/a")
-  }
-
   /** There should exist exactly two time conditions **/
   @Test(expected = classOf[TableException])
   def testWindowJoinSingleTimeCondition() = {
@@ -92,4 +82,58 @@ class JoinValidationTest extends TableTestBase {
     streamUtil.verifySql(sql, "n/a")
   }
 
+  /** Validates that range and equality predicate are not accepted **/
+  @Test(expected = classOf[TableException])
+  def testRangeAndEqualityPredicates(): Unit = {
+    val sql =
+      """
+        |SELECT *
+        |FROM MyTable t1, MyTable2 t2
+        |WHERE t1.a = t2.a AND
+        |  t1.proctime > t2.proctime - INTERVAL '5' SECOND AND
+        |  t1.proctime = t2.proctime
+        | """.stripMargin
+
+    streamUtil.verifySql(sql, "n/a")
+  }
+
+  /** Validates that equality predicate with offset are not accepted **/
+  @Test(expected = classOf[TableException])
+  def testEqualityPredicateWithOffset(): Unit = {
+    val sql =
+      """
+        |SELECT *
+        |FROM MyTable t1, MyTable2 t2
+        |WHERE t1.a = t2.a AND
+        |  t1.proctime = t2.proctime - INTERVAL '5' SECOND
+        | """.stripMargin
+
+    streamUtil.verifySql(sql, "n/a")
+  }
+
+  /** Validates that no rowtime attribute is in the output schema for non-window inner join **/
+  @Test(expected = classOf[TableException])
+  def testNoRowtimeAttributeInResultForNonWindowInnerJoin(): Unit = {
+    val sql =
+      """
+        |SELECT *
+        |FROM MyTable t1, MyTable2 t2
+        |WHERE t1.a = t2.a
+        | """.stripMargin
+
+    streamUtil.verifySql(sql, "n/a")
+  }
+
+  /** Validates that no proctime attribute is in remaining predicate for non-window inner join **/
+  @Test(expected = classOf[TableException])
+  def testNoProctimeAttributeInResultForNonWindowInnerJoin(): Unit = {
+    val sql =
+      """
+        |SELECT *
+        |FROM MyTable t1, MyTable2 t2
+        |WHERE t1.a = t2.a AND t1.proctime > t2.proctime
+        | """.stripMargin
+
+    streamUtil.verifySql(sql, "n/a")
+  }
 }

@@ -18,6 +18,7 @@
 package org.apache.flink.streaming.api.graph;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.cache.DistributedCache;
 import org.apache.flink.api.common.functions.Function;
 import org.apache.flink.api.common.operators.ResourceSpec;
@@ -26,7 +27,7 @@ import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
-import org.apache.flink.migration.streaming.api.graph.StreamGraphHasherV1;
+import org.apache.flink.runtime.checkpoint.CheckpointRetentionPolicy;
 import org.apache.flink.runtime.checkpoint.MasterTriggerRestoreHook;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.DistributionPattern;
@@ -38,7 +39,7 @@ import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.ScheduleMode;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
-import org.apache.flink.runtime.jobgraph.tasks.ExternalizedCheckpointSettings;
+import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
 import org.apache.flink.runtime.jobmanager.scheduler.CoLocationGroup;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
@@ -84,7 +85,7 @@ public class StreamingJobGraphGenerator {
 	 * Restart delay used for the FixedDelayRestartStrategy in case checkpointing was enabled but
 	 * no restart strategy has been specified.
 	 */
-	private static final long DEFAULT_RESTART_DELAY = 10000L;
+	private static final long DEFAULT_RESTART_DELAY = 0L;
 
 	// ------------------------------------------------------------------------
 
@@ -116,7 +117,7 @@ public class StreamingJobGraphGenerator {
 	private StreamingJobGraphGenerator(StreamGraph streamGraph) {
 		this.streamGraph = streamGraph;
 		this.defaultStreamGraphHasher = new StreamGraphHasherV2();
-		this.legacyStreamGraphHashers = Arrays.asList(new StreamGraphHasherV1(), new StreamGraphUserHashHasher());
+		this.legacyStreamGraphHashers = Arrays.asList(new StreamGraphUserHashHasher());
 
 		this.jobVertices = new HashMap<>();
 		this.builtVertices = new HashSet<>();
@@ -157,7 +158,7 @@ public class StreamingJobGraphGenerator {
 
 		// add registered cache file into job configuration
 		for (Tuple2<String, DistributedCache.DistributedCacheEntry> e : streamGraph.getEnvironment().getCachedFiles()) {
-			DistributedCache.writeFileInfoToConfig(e.f0, e.f1, jobGraph.getJobConfiguration());
+			jobGraph.addUserArtifact(e.f0, e.f1);
 		}
 
 		// set the ExecutionConfig last when it has been finalized
@@ -241,14 +242,14 @@ public class StreamingJobGraphGenerator {
 				createChain(nonChainable.getTargetId(), nonChainable.getTargetId(), hashes, legacyHashes, 0, chainedOperatorHashes);
 			}
 
-			List<Tuple2<byte[], byte[]>> operatorHashes = chainedOperatorHashes.get(startNodeId);
-			if (operatorHashes == null) {
-				operatorHashes = new ArrayList<>();
-				chainedOperatorHashes.put(startNodeId, operatorHashes);
-			}
+			List<Tuple2<byte[], byte[]>> operatorHashes =
+				chainedOperatorHashes.computeIfAbsent(startNodeId, k -> new ArrayList<>());
 
 			byte[] primaryHashBytes = hashes.get(currentNodeId);
-			operatorHashes.add(new Tuple2<>(primaryHashBytes, legacyHashes.get(1).get(currentNodeId)));
+
+			for (Map<Integer, byte[]> legacyHash : legacyHashes) {
+				operatorHashes.add(new Tuple2<>(primaryHashBytes, legacyHash.get(currentNodeId)));
+			}
 
 			chainedNames.put(currentNodeId, createChainedName(currentNodeId, chainableOutputs));
 			chainedMinResources.put(currentNodeId, createChainedMinResources(currentNodeId, chainableOutputs));
@@ -494,12 +495,7 @@ public class StreamingJobGraphGenerator {
 
 		StreamPartitioner<?> partitioner = edge.getPartitioner();
 		JobEdge jobEdge;
-		if (partitioner instanceof ForwardPartitioner) {
-			jobEdge = downStreamVertex.connectNewDataSetAsInput(
-				headVertex,
-				DistributionPattern.POINTWISE,
-				ResultPartitionType.PIPELINED_BOUNDED);
-		} else if (partitioner instanceof RescalePartitioner){
+		if (partitioner instanceof ForwardPartitioner || partitioner instanceof RescalePartitioner) {
 			jobEdge = downStreamVertex.connectNewDataSetAsInput(
 				headVertex,
 				DistributionPattern.POINTWISE,
@@ -574,10 +570,15 @@ public class StreamingJobGraphGenerator {
 
 		long interval = cfg.getCheckpointInterval();
 		if (interval > 0) {
+
+			ExecutionConfig executionConfig = streamGraph.getExecutionConfig();
+			// propagate the expected behaviour for checkpoint errors to task.
+			executionConfig.setFailTaskOnCheckpointError(cfg.isFailOnCheckpointingErrors());
+
 			// check if a restart strategy has been set, if not then set the FixedDelayRestartStrategy
-			if (streamGraph.getExecutionConfig().getRestartStrategy() == null) {
+			if (executionConfig.getRestartStrategy() == null) {
 				// if the user enabled checkpointing, the default number of exec retries is infinite.
-				streamGraph.getExecutionConfig().setRestartStrategy(
+				executionConfig.setRestartStrategy(
 					RestartStrategies.fixedDelayRestart(Integer.MAX_VALUE, DEFAULT_RESTART_DELAY));
 			}
 		} else {
@@ -609,16 +610,18 @@ public class StreamingJobGraphGenerator {
 
 		//  --- configure options ---
 
-		ExternalizedCheckpointSettings externalizedCheckpointSettings;
+		CheckpointRetentionPolicy retentionAfterTermination;
 		if (cfg.isExternalizedCheckpointsEnabled()) {
 			CheckpointConfig.ExternalizedCheckpointCleanup cleanup = cfg.getExternalizedCheckpointCleanup();
 			// Sanity check
 			if (cleanup == null) {
 				throw new IllegalStateException("Externalized checkpoints enabled, but no cleanup mode configured.");
 			}
-			externalizedCheckpointSettings = ExternalizedCheckpointSettings.externalizeCheckpoints(cleanup.deleteOnCancellation());
+			retentionAfterTermination = cleanup.deleteOnCancellation() ?
+					CheckpointRetentionPolicy.RETAIN_ON_FAILURE :
+					CheckpointRetentionPolicy.RETAIN_ON_CANCELLATION;
 		} else {
-			externalizedCheckpointSettings = ExternalizedCheckpointSettings.none();
+			retentionAfterTermination = CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION;
 		}
 
 		CheckpointingMode mode = cfg.getCheckpointingMode();
@@ -683,13 +686,18 @@ public class StreamingJobGraphGenerator {
 		//  --- done, put it all together ---
 
 		JobCheckpointingSettings settings = new JobCheckpointingSettings(
-				triggerVertices, ackVertices, commitVertices, interval,
-				cfg.getCheckpointTimeout(), cfg.getMinPauseBetweenCheckpoints(),
+			triggerVertices,
+			ackVertices,
+			commitVertices,
+			new CheckpointCoordinatorConfiguration(
+				interval,
+				cfg.getCheckpointTimeout(),
+				cfg.getMinPauseBetweenCheckpoints(),
 				cfg.getMaxConcurrentCheckpoints(),
-				externalizedCheckpointSettings,
-				serializedStateBackend,
-				serializedHooks,
-				isExactlyOnce);
+				retentionAfterTermination,
+				isExactlyOnce),
+			serializedStateBackend,
+			serializedHooks);
 
 		jobGraph.setSnapshotSettings(settings);
 	}

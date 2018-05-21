@@ -22,9 +22,9 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.checkpoint.StateObjectCollection;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
 import org.apache.flink.runtime.state.heap.HeapKeyedStateBackend;
-import org.apache.flink.runtime.state.heap.HeapReducingStateTest;
 import org.apache.flink.runtime.state.internal.InternalValueState;
 import org.apache.flink.runtime.state.memory.MemCheckpointStreamFactory;
 import org.apache.flink.util.TestLogger;
@@ -33,7 +33,6 @@ import org.apache.commons.io.IOUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
-import java.util.Collections;
 import java.util.concurrent.RunnableFuture;
 
 import static org.mockito.Mockito.mock;
@@ -41,7 +40,7 @@ import static org.mockito.Mockito.mock;
 public class StateSnapshotCompressionTest extends TestLogger {
 
 	@Test
-	public void testCompressionConfiguration() throws Exception {
+	public void testCompressionConfiguration() {
 
 		ExecutionConfig executionConfig = new ExecutionConfig();
 		executionConfig.setUseSnapshotCompression(true);
@@ -49,11 +48,12 @@ public class StateSnapshotCompressionTest extends TestLogger {
 		AbstractKeyedStateBackend<String> stateBackend = new HeapKeyedStateBackend<>(
 			mock(TaskKvStateRegistry.class),
 			StringSerializer.INSTANCE,
-			HeapReducingStateTest.class.getClassLoader(),
+			StateSnapshotCompressionTest.class.getClassLoader(),
 			16,
 			new KeyGroupRange(0, 15),
 			true,
-			executionConfig);
+			executionConfig,
+			TestLocalRecoveryConfig.disabled());
 
 		try {
 			Assert.assertTrue(
@@ -70,11 +70,12 @@ public class StateSnapshotCompressionTest extends TestLogger {
 		stateBackend = new HeapKeyedStateBackend<>(
 			mock(TaskKvStateRegistry.class),
 			StringSerializer.INSTANCE,
-			HeapReducingStateTest.class.getClassLoader(),
+			StateSnapshotCompressionTest.class.getClassLoader(),
 			16,
 			new KeyGroupRange(0, 15),
 			true,
-			executionConfig);
+			executionConfig,
+			TestLocalRecoveryConfig.disabled());
 
 		try {
 			Assert.assertTrue(
@@ -109,15 +110,16 @@ public class StateSnapshotCompressionTest extends TestLogger {
 		AbstractKeyedStateBackend<String> stateBackend = new HeapKeyedStateBackend<>(
 			mock(TaskKvStateRegistry.class),
 			StringSerializer.INSTANCE,
-			HeapReducingStateTest.class.getClassLoader(),
+			StateSnapshotCompressionTest.class.getClassLoader(),
 			16,
 			new KeyGroupRange(0, 15),
 			true,
-			executionConfig);
+			executionConfig,
+			TestLocalRecoveryConfig.disabled());
 
 		try {
 
-			InternalValueState<VoidNamespace, String> state =
+			InternalValueState<String, VoidNamespace, String> state =
 				stateBackend.createValueState(
 					new VoidNamespaceSerializer(),
 					stateDescriptor);
@@ -135,10 +137,11 @@ public class StateSnapshotCompressionTest extends TestLogger {
 			state.setCurrentNamespace(VoidNamespace.INSTANCE);
 			state.update("45");
 			CheckpointStreamFactory streamFactory = new MemCheckpointStreamFactory(4 * 1024 * 1024);
-			RunnableFuture<KeyedStateHandle> snapshot =
-				stateBackend.snapshot(0L, 0L, streamFactory, CheckpointOptions.forFullCheckpoint());
+			RunnableFuture<SnapshotResult<KeyedStateHandle>> snapshot =
+				stateBackend.snapshot(0L, 0L, streamFactory, CheckpointOptions.forCheckpointWithDefaultLocation());
 			snapshot.run();
-			stateHandle = snapshot.get();
+			SnapshotResult<KeyedStateHandle> snapshotResult = snapshot.get();
+			stateHandle = snapshotResult.getJobManagerOwnedSnapshot();
 
 		} finally {
 			IOUtils.closeQuietly(stateBackend);
@@ -150,16 +153,17 @@ public class StateSnapshotCompressionTest extends TestLogger {
 		stateBackend = new HeapKeyedStateBackend<>(
 			mock(TaskKvStateRegistry.class),
 			StringSerializer.INSTANCE,
-			HeapReducingStateTest.class.getClassLoader(),
+			StateSnapshotCompressionTest.class.getClassLoader(),
 			16,
 			new KeyGroupRange(0, 15),
 			true,
-			executionConfig);
+			executionConfig,
+			TestLocalRecoveryConfig.disabled());
 		try {
 
-			stateBackend.restore(Collections.singletonList(stateHandle));
+			stateBackend.restore(StateObjectCollection.singleton(stateHandle));
 
-			InternalValueState<VoidNamespace, String> state = stateBackend.createValueState(
+			InternalValueState<String, VoidNamespace, String> state = stateBackend.createValueState(
 				new VoidNamespaceSerializer(),
 				stateDescriptor);
 

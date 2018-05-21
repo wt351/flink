@@ -20,9 +20,10 @@ package org.apache.flink.runtime.jobmanager.slots;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
-import org.apache.flink.runtime.blob.BlobKey;
+import org.apache.flink.runtime.blob.TransientBlobKey;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
+import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.PartitionInfo;
@@ -30,6 +31,7 @@ import org.apache.flink.runtime.instance.InstanceID;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.StackTrace;
 import org.apache.flink.runtime.messages.StackTraceSampleResponse;
+import org.apache.flink.runtime.rpc.RpcTimeout;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -177,7 +179,7 @@ public interface TaskManagerGateway {
 	 * @param timeout for the request
 	 * @return Future blob key under which the task manager log has been stored
 	 */
-	CompletableFuture<BlobKey> requestTaskManagerLog(final Time timeout);
+	CompletableFuture<TransientBlobKey> requestTaskManagerLog(final Time timeout);
 
 	/**
 	 * Request the task manager stdout from the task manager.
@@ -185,5 +187,18 @@ public interface TaskManagerGateway {
 	 * @param timeout for the request
 	 * @return Future blob key under which the task manager stdout file has been stored
 	 */
-	CompletableFuture<BlobKey> requestTaskManagerStdout(final Time timeout);
+	CompletableFuture<TransientBlobKey> requestTaskManagerStdout(final Time timeout);
+
+	/**
+	 * Frees the slot with the given allocation ID.
+	 *
+	 * @param allocationId identifying the slot to free
+	 * @param cause of the freeing operation
+	 * @param timeout for the operation
+	 * @return Future acknowledge which is returned once the slot has been freed
+	 */
+	CompletableFuture<Acknowledge> freeSlot(
+		final AllocationID allocationId,
+		final Throwable cause,
+		@RpcTimeout final Time timeout);
 }

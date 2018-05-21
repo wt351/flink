@@ -20,6 +20,8 @@ package org.apache.flink.runtime.taskexecutor;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.util.TestLogger;
+
 import org.junit.Test;
 
 import static org.junit.Assert.*;
@@ -27,7 +29,7 @@ import static org.junit.Assert.*;
 /**
  * Unit test for {@link TaskManagerServicesConfiguration}.
  */
-public class TaskManagerServicesConfigurationTest {
+public class TaskManagerServicesConfigurationTest extends TestLogger {
 	/**
 	 * Verifies that {@link TaskManagerServicesConfiguration#hasNewNetworkBufConf(Configuration)}
 	 * returns the correct result for old configurations via

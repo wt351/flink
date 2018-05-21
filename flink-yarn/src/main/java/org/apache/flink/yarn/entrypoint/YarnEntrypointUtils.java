@@ -20,13 +20,16 @@ package org.apache.flink.yarn.entrypoint;
 
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.ResourceManagerOptions;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.SecurityOptions;
 import org.apache.flink.configuration.WebOptions;
 import org.apache.flink.runtime.clusterframework.BootstrapTools;
+import org.apache.flink.runtime.security.SecurityConfiguration;
 import org.apache.flink.runtime.security.SecurityContext;
 import org.apache.flink.runtime.security.SecurityUtils;
 import org.apache.flink.util.Preconditions;
@@ -34,7 +37,6 @@ import org.apache.flink.yarn.Utils;
 import org.apache.flink.yarn.YarnConfigKeys;
 import org.apache.flink.yarn.cli.FlinkYarnSessionCli;
 
-import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.slf4j.Logger;
@@ -52,29 +54,15 @@ public class YarnEntrypointUtils {
 	public static SecurityContext installSecurityContext(
 			Configuration configuration,
 			String workingDirectory) throws Exception {
-		org.apache.hadoop.conf.Configuration hadoopConfiguration = null;
 
-		//To support Yarn Secure Integration Test Scenario
-		File krb5Conf = new File(workingDirectory, Utils.KRB5_FILE_NAME);
-		if (krb5Conf.exists() && krb5Conf.canRead()) {
-			hadoopConfiguration = new org.apache.hadoop.conf.Configuration();
-			hadoopConfiguration.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION, "kerberos");
-			hadoopConfiguration.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, "true");
-		}
-
-		SecurityUtils.SecurityConfiguration sc;
-		if (hadoopConfiguration != null) {
-			sc = new SecurityUtils.SecurityConfiguration(configuration, hadoopConfiguration);
-		} else {
-			sc = new SecurityUtils.SecurityConfiguration(configuration);
-		}
+		SecurityConfiguration sc = new SecurityConfiguration(configuration);
 
 		SecurityUtils.install(sc);
 
 		return SecurityUtils.getInstalledContext();
 	}
 
-	public static Configuration loadConfiguration(String workingDirectory, Map<String, String> env) {
+	public static Configuration loadConfiguration(String workingDirectory, Map<String, String> env, Logger log) {
 		Configuration configuration = GlobalConfiguration.loadConfiguration(workingDirectory);
 
 		final String remoteKeytabPrincipal = env.get(YarnConfigKeys.KEYTAB_PRINCIPAL);
@@ -91,6 +79,7 @@ public class YarnEntrypointUtils {
 			ApplicationConstants.Environment.NM_HOST.key());
 
 		configuration.setString(JobManagerOptions.ADDRESS, hostname);
+		configuration.setString(RestOptions.ADDRESS, hostname);
 
 		// TODO: Support port ranges for the AM
 //		final String portRange = configuration.getString(
@@ -108,6 +97,11 @@ public class YarnEntrypointUtils {
 		// if a web monitor shall be started, set the port to random binding
 		if (configuration.getInteger(WebOptions.PORT, 0) >= 0) {
 			configuration.setInteger(WebOptions.PORT, 0);
+		}
+
+		if (configuration.getInteger(RestOptions.PORT) >= 0) {
+			// set the REST port to 0 to select it randomly
+			configuration.setInteger(RestOptions.PORT, 0);
 		}
 
 		// if the user has set the deprecated YARN-specific config keys, we add the
@@ -134,6 +128,17 @@ public class YarnEntrypointUtils {
 		if (keytabPath != null && remoteKeytabPrincipal != null) {
 			configuration.setString(SecurityOptions.KERBEROS_LOGIN_KEYTAB, keytabPath);
 			configuration.setString(SecurityOptions.KERBEROS_LOGIN_PRINCIPAL, remoteKeytabPrincipal);
+		}
+
+		// configure local directory
+		if (configuration.contains(CoreOptions.TMP_DIRS)) {
+			log.info("Overriding YARN's temporary file directories with those " +
+				"specified in the Flink config: " + configuration.getValue(CoreOptions.TMP_DIRS));
+		}
+		else {
+			final String localDirs = env.get(ApplicationConstants.Environment.LOCAL_DIRS.key());
+			log.info("Setting directories for temporary files to: {}", localDirs);
+			configuration.setString(CoreOptions.TMP_DIRS, localDirs);
 		}
 
 		return configuration;

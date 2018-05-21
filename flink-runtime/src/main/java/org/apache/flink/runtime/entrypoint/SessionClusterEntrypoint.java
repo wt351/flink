@@ -18,100 +18,105 @@
 
 package org.apache.flink.runtime.entrypoint;
 
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ConfigurationUtils;
+import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.runtime.blob.BlobServer;
-import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.blob.TransientBlobService;
+import org.apache.flink.runtime.concurrent.ScheduledExecutor;
+import org.apache.flink.runtime.dispatcher.ArchivedExecutionGraphStore;
 import org.apache.flink.runtime.dispatcher.Dispatcher;
+import org.apache.flink.runtime.dispatcher.DispatcherGateway;
+import org.apache.flink.runtime.dispatcher.DispatcherRestEndpoint;
+import org.apache.flink.runtime.dispatcher.FileArchivedExecutionGraphStore;
+import org.apache.flink.runtime.dispatcher.HistoryServerArchivist;
 import org.apache.flink.runtime.dispatcher.StandaloneDispatcher;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.metrics.MetricRegistry;
-import org.apache.flink.runtime.resourcemanager.ResourceManager;
+import org.apache.flink.runtime.leaderelection.LeaderElectionService;
+import org.apache.flink.runtime.metrics.groups.JobManagerMetricGroup;
+import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
+import org.apache.flink.runtime.rest.RestServerEndpointConfiguration;
+import org.apache.flink.runtime.rest.handler.RestHandlerConfiguration;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
-import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.FlinkException;
+import org.apache.flink.runtime.webmonitor.retriever.LeaderGatewayRetriever;
+import org.apache.flink.runtime.webmonitor.retriever.MetricQueryServiceRetriever;
+
+import org.apache.flink.shaded.guava18.com.google.common.base.Ticker;
+
+import javax.annotation.Nullable;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.concurrent.Executor;
 
 /**
  * Base class for session cluster entry points.
  */
 public abstract class SessionClusterEntrypoint extends ClusterEntrypoint {
 
-	private ResourceManager<?> resourceManager;
-
-	private Dispatcher dispatcher;
-
 	public SessionClusterEntrypoint(Configuration configuration) {
 		super(configuration);
 	}
 
 	@Override
-	protected void startClusterComponents(
+	protected ArchivedExecutionGraphStore createSerializableExecutionGraphStore(
 			Configuration configuration,
-			RpcService rpcService,
-			HighAvailabilityServices highAvailabilityServices,
-			BlobServer blobServer,
-			HeartbeatServices heartbeatServices,
-			MetricRegistry metricRegistry) throws Exception {
+			ScheduledExecutor scheduledExecutor) throws IOException {
+		final File tmpDir = new File(ConfigurationUtils.parseTempDirectories(configuration)[0]);
 
-		resourceManager = createResourceManager(
-			configuration,
-			ResourceID.generate(),
-			rpcService,
-			highAvailabilityServices,
-			heartbeatServices,
-			metricRegistry,
-			this);
+		final Time expirationTime =  Time.seconds(configuration.getLong(JobManagerOptions.JOB_STORE_EXPIRATION_TIME));
+		final long maximumCacheSizeBytes = configuration.getLong(JobManagerOptions.JOB_STORE_CACHE_SIZE);
 
-		dispatcher = createDispatcher(
-			configuration,
-			rpcService,
-			highAvailabilityServices,
-			blobServer,
-			heartbeatServices,
-			metricRegistry,
-			this);
-
-		LOG.debug("Starting ResourceManager.");
-		resourceManager.start();
-
-		LOG.debug("Starting Dispatcher.");
-		dispatcher.start();
+		return new FileArchivedExecutionGraphStore(
+			tmpDir,
+			expirationTime,
+			maximumCacheSizeBytes,
+			scheduledExecutor,
+			Ticker.systemTicker());
 	}
 
 	@Override
-	protected void stopClusterComponents(boolean cleanupHaData) throws Exception {
-		Throwable exception = null;
+	protected DispatcherRestEndpoint createRestEndpoint(
+			Configuration configuration,
+			LeaderGatewayRetriever<DispatcherGateway> dispatcherGatewayRetriever,
+			LeaderGatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever,
+			TransientBlobService transientBlobService,
+			Executor executor,
+			MetricQueryServiceRetriever metricQueryServiceRetriever,
+			LeaderElectionService leaderElectionService) throws Exception {
 
-		if (dispatcher != null) {
-			try {
-				dispatcher.shutDown();
-			} catch (Throwable t) {
-				exception = t;
-			}
-		}
+		final RestHandlerConfiguration restHandlerConfiguration = RestHandlerConfiguration.fromConfiguration(configuration);
 
-		if (resourceManager != null) {
-			try {
-				resourceManager.shutDown();
-			} catch (Throwable t) {
-				exception = ExceptionUtils.firstOrSuppressed(t, exception);
-			}
-		}
-
-		if (exception != null) {
-			throw new FlinkException("Could not properly shut down the session cluster entry point.", exception);
-		}
+		return new DispatcherRestEndpoint(
+			RestServerEndpointConfiguration.fromConfiguration(configuration),
+			dispatcherGatewayRetriever,
+			configuration,
+			restHandlerConfiguration,
+			resourceManagerGatewayRetriever,
+			transientBlobService,
+			executor,
+			metricQueryServiceRetriever,
+			leaderElectionService,
+			this);
 	}
 
+	@Override
 	protected Dispatcher createDispatcher(
-		Configuration configuration,
-		RpcService rpcService,
-		HighAvailabilityServices highAvailabilityServices,
-		BlobServer blobServer,
-		HeartbeatServices heartbeatServices,
-		MetricRegistry metricRegistry,
-		FatalErrorHandler fatalErrorHandler) throws Exception {
+			Configuration configuration,
+			RpcService rpcService,
+			HighAvailabilityServices highAvailabilityServices,
+			ResourceManagerGateway resourceManagerGateway,
+			BlobServer blobServer,
+			HeartbeatServices heartbeatServices,
+			JobManagerMetricGroup jobManagerMetricGroup,
+			@Nullable String metricQueryServicePath,
+			ArchivedExecutionGraphStore archivedExecutionGraphStore,
+			FatalErrorHandler fatalErrorHandler,
+			@Nullable String restAddress,
+			HistoryServerArchivist historyServerArchivist) throws Exception {
 
 		// create the default dispatcher
 		return new StandaloneDispatcher(
@@ -119,18 +124,15 @@ public abstract class SessionClusterEntrypoint extends ClusterEntrypoint {
 			Dispatcher.DISPATCHER_NAME,
 			configuration,
 			highAvailabilityServices,
+			resourceManagerGateway,
 			blobServer,
 			heartbeatServices,
-			metricRegistry,
-			fatalErrorHandler);
+			jobManagerMetricGroup,
+			metricQueryServicePath,
+			archivedExecutionGraphStore,
+			Dispatcher.DefaultJobManagerRunnerFactory.INSTANCE,
+			fatalErrorHandler,
+			restAddress,
+			historyServerArchivist);
 	}
-
-	protected abstract ResourceManager<?> createResourceManager(
-		Configuration configuration,
-		ResourceID resourceId,
-		RpcService rpcService,
-		HighAvailabilityServices highAvailabilityServices,
-		HeartbeatServices heartbeatServices,
-		MetricRegistry metricRegistry,
-		FatalErrorHandler fatalErrorHandler) throws Exception;
 }

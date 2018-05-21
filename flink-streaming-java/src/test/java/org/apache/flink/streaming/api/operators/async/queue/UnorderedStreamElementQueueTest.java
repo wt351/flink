@@ -18,7 +18,6 @@
 
 package org.apache.flink.streaming.api.operators.async.queue;
 
-import org.apache.flink.runtime.concurrent.FlinkFutureException;
 import org.apache.flink.streaming.api.operators.async.OperatorActions;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -35,6 +34,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -104,19 +104,19 @@ public class UnorderedStreamElementQueueTest extends TestLogger {
 				try {
 					return queue.poll();
 				} catch (InterruptedException e) {
-					throw new FlinkFutureException(e);
+					throw new CompletionException(e);
 				}
 			},
 			executor);
 
 		// this should not fulfill the poll, because R3 is behind W1
-		record3.collect(Collections.<Integer>emptyList());
+		record3.complete(Collections.<Integer>emptyList());
 
 		Thread.sleep(10L);
 
 		Assert.assertFalse(firstPoll.isDone());
 
-		record2.collect(Collections.<Integer>emptyList());
+		record2.complete(Collections.<Integer>emptyList());
 
 		Assert.assertEquals(record2, firstPoll.get());
 
@@ -125,20 +125,20 @@ public class UnorderedStreamElementQueueTest extends TestLogger {
 				try {
 					return queue.poll();
 				} catch (InterruptedException e) {
-					throw new FlinkFutureException(e);
+					throw new CompletionException(e);
 				}
 			},
 			executor);
 
-		record6.collect(Collections.<Integer>emptyList());
-		record4.collect(Collections.<Integer>emptyList());
+		record6.complete(Collections.<Integer>emptyList());
+		record4.complete(Collections.<Integer>emptyList());
 
 		Thread.sleep(10L);
 
 		// The future should not be completed because R1 has not been completed yet
 		Assert.assertFalse(secondPoll.isDone());
 
-		record1.collect(Collections.<Integer>emptyList());
+		record1.complete(Collections.<Integer>emptyList());
 
 		Assert.assertEquals(record1, secondPoll.get());
 
@@ -171,7 +171,7 @@ public class UnorderedStreamElementQueueTest extends TestLogger {
 				try {
 					return queue.poll();
 				} catch (InterruptedException e) {
-					throw new FlinkFutureException(e);
+					throw new CompletionException(e);
 				}
 			},
 			executor);
@@ -180,7 +180,7 @@ public class UnorderedStreamElementQueueTest extends TestLogger {
 
 		Assert.assertFalse(thirdPoll.isDone());
 
-		record5.collect(Collections.<Integer>emptyList());
+		record5.complete(Collections.<Integer>emptyList());
 
 		Assert.assertEquals(record5, thirdPoll.get());
 

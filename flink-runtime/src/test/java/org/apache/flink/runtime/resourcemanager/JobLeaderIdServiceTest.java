@@ -22,7 +22,8 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.concurrent.ScheduledExecutor;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
-import org.apache.flink.runtime.leaderelection.TestingLeaderRetrievalService;
+import org.apache.flink.runtime.jobmaster.JobMasterId;
+import org.apache.flink.runtime.leaderretrieval.SettableLeaderRetrievalService;
 import org.apache.flink.util.TestLogger;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
@@ -62,9 +63,9 @@ public class JobLeaderIdServiceTest extends TestLogger {
 	public void testAddingJob() throws Exception {
 		final JobID jobId = new JobID();
 		final String address = "foobar";
-		final UUID leaderId = UUID.randomUUID();
+		final JobMasterId leaderId = JobMasterId.generate();
 		TestingHighAvailabilityServices highAvailabilityServices = new TestingHighAvailabilityServices();
-		TestingLeaderRetrievalService leaderRetrievalService = new TestingLeaderRetrievalService(
+		SettableLeaderRetrievalService leaderRetrievalService = new SettableLeaderRetrievalService(
 			null,
 			null);
 
@@ -83,10 +84,10 @@ public class JobLeaderIdServiceTest extends TestLogger {
 
 		jobLeaderIdService.addJob(jobId);
 
-		CompletableFuture<UUID> leaderIdFuture = jobLeaderIdService.getLeaderId(jobId);
+		CompletableFuture<JobMasterId> leaderIdFuture = jobLeaderIdService.getLeaderId(jobId);
 
 		// notify the leader id service about the new leader
-		leaderRetrievalService.notifyListener(address, leaderId);
+		leaderRetrievalService.notifyListener(address, leaderId.toUUID());
 
 		assertEquals(leaderId, leaderIdFuture.get());
 
@@ -100,7 +101,7 @@ public class JobLeaderIdServiceTest extends TestLogger {
 	public void testRemovingJob() throws Exception {
 		final JobID jobId = new JobID();
 		TestingHighAvailabilityServices highAvailabilityServices = new TestingHighAvailabilityServices();
-		TestingLeaderRetrievalService leaderRetrievalService = new TestingLeaderRetrievalService(null, null);
+		SettableLeaderRetrievalService leaderRetrievalService = new SettableLeaderRetrievalService(null, null);
 
 		highAvailabilityServices.setJobMasterLeaderRetriever(jobId, leaderRetrievalService);
 
@@ -117,7 +118,7 @@ public class JobLeaderIdServiceTest extends TestLogger {
 
 		jobLeaderIdService.addJob(jobId);
 
-		CompletableFuture<UUID> leaderIdFuture = jobLeaderIdService.getLeaderId(jobId);
+		CompletableFuture<JobMasterId> leaderIdFuture = jobLeaderIdService.getLeaderId(jobId);
 
 		// remove the job before we could find a leader
 		jobLeaderIdService.removeJob(jobId);
@@ -141,7 +142,7 @@ public class JobLeaderIdServiceTest extends TestLogger {
 	public void testInitialJobTimeout() throws Exception {
 		final JobID jobId = new JobID();
 		TestingHighAvailabilityServices highAvailabilityServices = new TestingHighAvailabilityServices();
-		TestingLeaderRetrievalService leaderRetrievalService = new TestingLeaderRetrievalService(
+		SettableLeaderRetrievalService leaderRetrievalService = new SettableLeaderRetrievalService(
 			null,
 			null);
 
@@ -183,9 +184,9 @@ public class JobLeaderIdServiceTest extends TestLogger {
 	public void jobTimeoutAfterLostLeadership() throws Exception {
 		final JobID jobId = new JobID();
 		final String address = "foobar";
-		final UUID leaderId = UUID.randomUUID();
+		final JobMasterId leaderId = JobMasterId.generate();
 		TestingHighAvailabilityServices highAvailabilityServices = new TestingHighAvailabilityServices();
-		TestingLeaderRetrievalService leaderRetrievalService = new TestingLeaderRetrievalService(
+		SettableLeaderRetrievalService leaderRetrievalService = new SettableLeaderRetrievalService(
 			null,
 			null);
 
@@ -228,10 +229,10 @@ public class JobLeaderIdServiceTest extends TestLogger {
 
 		jobLeaderIdService.addJob(jobId);
 
-		CompletableFuture<UUID> leaderIdFuture = jobLeaderIdService.getLeaderId(jobId);
+		CompletableFuture<JobMasterId> leaderIdFuture = jobLeaderIdService.getLeaderId(jobId);
 
 		// notify the leader id service about the new leader
-		leaderRetrievalService.notifyListener(address, leaderId);
+		leaderRetrievalService.notifyListener(address, leaderId.toUUID());
 
 		assertEquals(leaderId, leaderIdFuture.get());
 

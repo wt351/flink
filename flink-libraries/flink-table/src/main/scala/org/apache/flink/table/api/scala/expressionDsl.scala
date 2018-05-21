@@ -214,6 +214,11 @@ trait ImplicitExpressionOperations {
   def varSamp = VarSamp(expr)
 
   /**
+    *  Returns multiset aggregate of a given expression.
+    */
+  def collect = Collect(expr)
+
+  /**
     * Converts a value to a given type.
     *
     * e.g. "42".cast(Types.INT) leads to 42.
@@ -291,14 +296,24 @@ trait ImplicitExpressionOperations {
   def exp() = Exp(expr)
 
   /**
-    * Calculates the base 10 logarithm of given value.
+    * Calculates the base 10 logarithm of the given value.
     */
   def log10() = Log10(expr)
 
   /**
-    * Calculates the natural logarithm of given value.
+    * Calculates the natural logarithm of the given value.
     */
   def ln() = Ln(expr)
+
+  /**
+    * Calculates the natural logarithm of the given value.
+    */
+  def log() = Log(null, expr)
+
+  /**
+    * Calculates the logarithm of the given value to the given base.
+    */
+  def log(base: Expression) = Log(base, expr)
 
   /**
     * Calculates the given number raised to the power of the other value.
@@ -379,6 +394,12 @@ trait ImplicitExpressionOperations {
     * Rounds the given number to integer places right to the decimal point.
     */
   def round(places: Expression) = Round(expr, places)
+
+  /**
+    * Returns a string representation of an integer numeric value in binary format. Returns null if
+    * numeric is null. E.g. "4" leads to "100", "12" leads to "1100".
+    */
+  def bin() = Bin(expr)
 
   // String operations
 
@@ -468,6 +489,22 @@ trait ImplicitExpressionOperations {
     * e.g. "a".position("bbbbba") leads to 6
     */
   def position(haystack: Expression) = Position(expr, haystack)
+
+  /**
+    * Returns a string left-padded with the given pad string to a length of len characters. If
+    * the string is longer than len, the return value is shortened to len characters.
+    *
+    * e.g. "hi".lpad(4, '??') returns "??hi",  "hi".lpad(1, '??') returns "h"
+    */
+  def lpad(len: Expression, pad: Expression) = Lpad(expr, len, pad)
+
+  /**
+    * Returns a string right-padded with the given pad string to a length of len characters. If
+    * the string is longer than len, the return value is shortened to len characters.
+    *
+    * e.g. "hi".rpad(4, '??') returns "hi??",  "hi".rpad(1, '??') returns "h"
+    */
+  def rpad(len: Expression, pad: Expression) = Rpad(expr, len, pad)
 
   /**
     * For windowing function to config over window
@@ -683,19 +720,19 @@ trait ImplicitExpressionOperations {
   def flatten() = Flattening(expr)
 
   /**
-    * Accesses the element of an array based on an index (starting at 1).
+    * Accesses the element of an array or map based on a key or an index (starting at 1).
     *
-    * @param index position of the element (starting at 1)
+    * @param index key or position of the element (array index starting at 1)
     * @return value of the element
     */
-  def at(index: Expression) = ArrayElementAt(expr, index)
+  def at(index: Expression) = ItemAt(expr, index)
 
   /**
-    * Returns the number of elements of an array.
+    * Returns the number of elements of an array or number of entries of a map.
     *
-    * @return number of elements
+    * @return number of elements or entries
     */
-  def cardinality() = ArrayCardinality(expr)
+  def cardinality() = Cardinality(expr)
 
   /**
     * Returns the sole element of an array with a single element. Returns null if the array is
@@ -718,6 +755,60 @@ trait ImplicitExpressionOperations {
     * Flink's processing time.
     */
   def proctime = ProctimeAttribute(expr)
+
+  // Hash functions
+
+  /**
+    * Returns the MD5 hash of the string argument; null if string is null.
+    *
+    * @return string of 32 hexadecimal digits or null
+    */
+  def md5() = Md5(expr)
+
+  /**
+    * Returns the SHA-1 hash of the string argument; null if string is null.
+    *
+    * @return string of 40 hexadecimal digits or null
+    */
+  def sha1() = Sha1(expr)
+
+  /**
+    * Returns the SHA-224 hash of the string argument; null if string is null.
+    *
+    * @return string of 56 hexadecimal digits or null
+    */
+  def sha224() = Sha224(expr)
+
+  /**
+    * Returns the SHA-256 hash of the string argument; null if string is null.
+    *
+    * @return string of 64 hexadecimal digits or null
+    */
+  def sha256() = Sha256(expr)
+
+  /**
+    * Returns the SHA-384 hash of the string argument; null if string is null.
+    *
+    * @return string of 96 hexadecimal digits or null
+    */
+  def sha384() = Sha384(expr)
+
+  /**
+    * Returns the SHA-512 hash of the string argument; null if string is null.
+    *
+    * @return string of 128 hexadecimal digits or null
+    */
+  def sha512() = Sha512(expr)
+
+  /**
+    * Returns the hash for the given string expression using the SHA-2 family of hash
+    * functions (SHA-224, SHA-256, SHA-384, or SHA-512).
+    *
+    * @param hashLength bit length of the result (either 224, 256, 384, or 512)
+    * @return string or null if one of the arguments is null.
+    */
+  def sha2(hashLength: Expression) = Sha2(expr, hashLength)
+
 }
 
 /**
@@ -960,6 +1051,32 @@ object array {
 }
 
 /**
+  * Creates a row of expressions.
+  */
+object row {
+
+  /**
+    * Creates a row of expressions.
+    */
+  def apply(head: Expression, tail: Expression*): Expression = {
+    RowConstructor(head +: tail.toSeq)
+  }
+}
+
+/**
+  * Creates a map of expressions. The map will be a map between two objects (not primitives).
+  */
+object map {
+
+  /**
+    * Creates a map of expressions. The map will be a map between two objects (not primitives).
+    */
+  def apply(key: Expression, value: Expression, tail: Expression*): Expression = {
+    MapConstructor(Seq(key, value) ++ tail.toSeq)
+  }
+}
+
+/**
   * Returns a value that is closer than any other value to pi.
   */
 object pi {
@@ -1037,7 +1154,7 @@ object randInteger {
   */
 object concat {
   def apply(string: Expression, strings: Expression*): Expression = {
-    new Concat(Seq(string) ++ strings)
+    Concat(Seq(string) ++ strings)
   }
 }
 
@@ -1050,7 +1167,7 @@ object concat {
   **/
 object concat_ws {
   def apply(separator: Expression, string: Expression, strings: Expression*): Expression = {
-    new ConcatWs(separator, Seq(string) ++ strings)
+    ConcatWs(separator, Seq(string) ++ strings)
   }
 }
 

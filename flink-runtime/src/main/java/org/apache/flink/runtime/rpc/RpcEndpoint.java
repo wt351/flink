@@ -20,10 +20,12 @@ package org.apache.flink.runtime.rpc;
 
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.util.Preconditions;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
+
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -36,17 +38,15 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Base class for RPC endpoints. Distributed components which offer remote procedure calls have to
- * extend the RPC endpoint base class. An RPC endpoint is backed by an {@link RpcService}. 
- * 
+ * extend the RPC endpoint base class. An RPC endpoint is backed by an {@link RpcService}.
+ *
  * <h1>Endpoint and Gateway</h1>
- * 
  * To be done...
- * 
  * <h1>Single Threaded Endpoint Execution </h1>
- * 
+ *
  * <p>All RPC calls on the same endpoint are called by the same thread
  * (referred to as the endpoint's <i>main thread</i>).
- * Thus, by executing all state changing operations within the main 
+ * Thus, by executing all state changing operations within the main
  * thread, we don't have to reason about concurrent accesses, in the same way in the Actor Model
  * of Erlang or Akka.
  *
@@ -59,25 +59,25 @@ public abstract class RpcEndpoint implements RpcGateway {
 
 	// ------------------------------------------------------------------------
 
-	/** RPC service to be used to start the RPC server and to obtain rpc gateways */
+	/** RPC service to be used to start the RPC server and to obtain rpc gateways. */
 	private final RpcService rpcService;
 
-	/** Unique identifier for this rpc endpoint */
+	/** Unique identifier for this rpc endpoint. */
 	private final String endpointId;
 
-	/** Interface to access the underlying rpc server */
-	private final RpcServer rpcServer;
+	/** Interface to access the underlying rpc server. */
+	protected final RpcServer rpcServer;
+
+	/** A reference to the endpoint's main thread, if the current method is called by the main thread. */
+	final AtomicReference<Thread> currentMainThread = new AtomicReference<>(null);
 
 	/** The main thread executor to be used to execute future callbacks in the main thread
 	 * of the executing rpc server. */
-	private final Executor mainThreadExecutor;
-
-	/** A reference to the endpoint's main thread, if the current method is called by the main thread */
-	final AtomicReference<Thread> currentMainThread = new AtomicReference<>(null); 
+	private final MainThreadExecutor mainThreadExecutor;
 
 	/**
 	 * Initializes the RPC endpoint.
-	 * 
+	 *
 	 * @param rpcService The RPC server that dispatches calls to this RPC endpoint.
 	 * @param endpointId Unique identifier for this endpoint
 	 */
@@ -116,7 +116,7 @@ public abstract class RpcEndpoint implements RpcGateway {
 	 * Starts the rpc endpoint. This tells the underlying rpc server that the rpc endpoint is ready
 	 * to process remote procedure calls.
 	 *
-	 * IMPORTANT: Whenever you override this method, call the parent implementation to enable
+	 * <p>IMPORTANT: Whenever you override this method, call the parent implementation to enable
 	 * rpc processing. It is advised to make the parent call last.
 	 *
 	 * @throws Exception indicating that something went wrong while starting the RPC endpoint
@@ -139,11 +139,12 @@ public abstract class RpcEndpoint implements RpcGateway {
 	 * <p>This method is called when the RpcEndpoint is being shut down. The method is guaranteed
 	 * to be executed in the main thread context and can be used to clean up internal state.
 	 *
-	 * IMPORTANT: This method should never be called directly by the user.
+	 * <p>IMPORTANT: This method should never be called directly by the user.
 	 *
-	 * @throws Exception if an error occurs. The exception is returned as result of the termination future.
+	 * @return Future which is completed once all post stop actions are completed. If an error
+	 * occurs this future is completed exceptionally
 	 */
-	public void postStop() throws Exception {}
+	public abstract CompletableFuture<Void> postStop();
 
 	/**
 	 * Triggers the shut down of the rpc endpoint. The shut down is executed asynchronously.
@@ -208,7 +209,7 @@ public abstract class RpcEndpoint implements RpcGateway {
 	 *
 	 * @return Main thread execution context
 	 */
-	protected Executor getMainThreadExecutor() {
+	protected MainThreadExecutor getMainThreadExecutor() {
 		return mainThreadExecutor;
 	}
 
@@ -222,7 +223,8 @@ public abstract class RpcEndpoint implements RpcGateway {
 	}
 
 	/**
-	 * Return a future which is completed when the rpc endpoint has been terminated.
+	 * Return a future which is completed with true when the rpc endpoint has been terminated.
+	 * In case of a failure, this future is completed with the occurring exception.
 	 *
 	 * @return Future which is completed when the rpc endpoint has been terminated.
 	 */
@@ -286,15 +288,15 @@ public abstract class RpcEndpoint implements RpcGateway {
 
 	/**
 	 * Validates that the method call happens in the RPC endpoint's main thread.
-	 * 
+	 *
 	 * <p><b>IMPORTANT:</b> This check only happens when assertions are enabled,
 	 * such as when running tests.
-	 * 
+	 *
 	 * <p>This can be used for additional checks, like
 	 * <pre>{@code
 	 * protected void concurrencyCriticalMethod() {
 	 *     validateRunsInMainThread();
-	 *     
+	 *
 	 *     // some critical stuff
 	 * }
 	 * }</pre>
@@ -306,11 +308,11 @@ public abstract class RpcEndpoint implements RpcGateway {
 	// ------------------------------------------------------------------------
 	//  Utilities
 	// ------------------------------------------------------------------------
-	
+
 	/**
 	 * Executor which executes runnables in the main thread context.
 	 */
-	private static class MainThreadExecutor implements Executor {
+	protected static class MainThreadExecutor implements Executor {
 
 		private final MainThreadExecutable gateway;
 

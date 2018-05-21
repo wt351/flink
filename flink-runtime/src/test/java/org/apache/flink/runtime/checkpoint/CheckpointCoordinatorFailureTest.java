@@ -24,12 +24,12 @@ import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.OperatorID;
-import org.apache.flink.runtime.jobgraph.tasks.ExternalizedCheckpointSettings;
 import org.apache.flink.runtime.messages.checkpoint.AcknowledgeCheckpoint;
-import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.OperatorStateHandle;
+import org.apache.flink.runtime.state.KeyedStateHandle;
+import org.apache.flink.runtime.state.OperatorStreamStateHandle;
 import org.apache.flink.runtime.state.SharedStateRegistry;
-import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.Test;
@@ -72,13 +72,13 @@ public class CheckpointCoordinatorFailureTest extends TestLogger {
 			600000,
 			0,
 			Integer.MAX_VALUE,
-			ExternalizedCheckpointSettings.none(),
+			CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION,
 			new ExecutionVertex[]{vertex},
 			new ExecutionVertex[]{vertex},
 			new ExecutionVertex[]{vertex},
 			new StandaloneCheckpointIDCounter(),
 			new FailingCompletedCheckpointStore(),
-			null,
+			new MemoryStateBackend(),
 			Executors.directExecutor(),
 			SharedStateRegistry.DEFAULT_FACTORY);
 
@@ -92,15 +92,12 @@ public class CheckpointCoordinatorFailureTest extends TestLogger {
 
 		final long checkpointId = coord.getPendingCheckpoints().keySet().iterator().next();
 
-
-		StreamStateHandle legacyHandle = mock(StreamStateHandle.class);
 		KeyedStateHandle managedKeyedHandle = mock(KeyedStateHandle.class);
 		KeyedStateHandle rawKeyedHandle = mock(KeyedStateHandle.class);
-		OperatorStateHandle managedOpHandle = mock(OperatorStateHandle.class);
-		OperatorStateHandle rawOpHandle = mock(OperatorStateHandle.class);
+		OperatorStateHandle managedOpHandle = mock(OperatorStreamStateHandle.class);
+		OperatorStateHandle rawOpHandle = mock(OperatorStreamStateHandle.class);
 
 		final OperatorSubtaskState operatorSubtaskState = spy(new OperatorSubtaskState(
-			legacyHandle,
 			managedOpHandle,
 			rawOpHandle,
 			managedKeyedHandle,
@@ -126,7 +123,6 @@ public class CheckpointCoordinatorFailureTest extends TestLogger {
 
 		// make sure that the subtask state has been discarded after we could not complete it.
 		verify(operatorSubtaskState).discardState();
-		verify(operatorSubtaskState.getLegacyOperatorState()).discardState();
 		verify(operatorSubtaskState.getManagedOperatorState().iterator().next()).discardState();
 		verify(operatorSubtaskState.getRawOperatorState().iterator().next()).discardState();
 		verify(operatorSubtaskState.getManagedKeyedState().iterator().next()).discardState();

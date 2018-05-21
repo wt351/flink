@@ -94,16 +94,21 @@ for each key that the operation sees). The value can be set using `update(T)` an
 `T value()`.
 
 * `ListState<T>`: This keeps a list of elements. You can append elements and retrieve an `Iterable`
-over all currently stored elements. Elements are added using `add(T)`, the Iterable can
-be retrieved using `Iterable<T> get()`.
+over all currently stored elements. Elements are added using `add(T)` or `addAll(List<T>)`, the Iterable can
+be retrieved using `Iterable<T> get()`. You can also override the existing list with `update(List<T>)`
 
 * `ReducingState<T>`: This keeps a single value that represents the aggregation of all values
-added to the state. The interface is the same as for `ListState` but elements added using
+added to the state. The interface is similar to `ListState` but elements added using
 `add(T)` are reduced to an aggregate using a specified `ReduceFunction`.
+
+* `AggregatingState<IN, OUT>`: This keeps a single value that represents the aggregation of all values
+added to the state. Contrary to `ReducingState`, the aggregate type may be different from the type
+of elements that are added to the state. The interface is the same as for `ListState` but elements
+added using `add(IN)` are aggregated using a specified `AggregateFunction`.
 
 * `FoldingState<T, ACC>`: This keeps a single value that represents the aggregation of all values
 added to the state. Contrary to `ReducingState`, the aggregate type may be different from the type
-of elements that are added to the state. The interface is the same as for `ListState` but elements
+of elements that are added to the state. The interface is similar to `ListState` but elements
 added using `add(T)` are folded into an aggregate using a specified `FoldFunction`.
 
 * `MapState<UK, UV>`: This keeps a list of mappings. You can put key-value pairs into the state and
@@ -114,9 +119,7 @@ views for mappings, keys and values can be retrieved using `entries()`, `keys()`
 All types of state also have a method `clear()` that clears the state for the currently
 active key, i.e. the key of the input element.
 
-<span class="label label-danger">Attention</span> `FoldingState` will be deprecated in one of
-the next versions of Flink and will be completely removed in the future. A more general
-alternative will be provided.
+<span class="label label-danger">Attention</span> `FoldingState` and `FoldingStateDescriptor` have been deprecated in Flink 1.4 and will be completely removed in the future. Please use `AggregatingState` and `AggregatingStateDescriptor` instead.
 
 It is important to keep in mind that these state objects are only used for interfacing
 with state. The state is not necessarily stored inside but might reside on disk or somewhere else.
@@ -139,6 +142,7 @@ is available in a `RichFunction` has these methods for accessing state:
 * `ValueState<T> getState(ValueStateDescriptor<T>)`
 * `ReducingState<T> getReducingState(ReducingStateDescriptor<T>)`
 * `ListState<T> getListState(ListStateDescriptor<T>)`
+* `AggregatingState<IN, OUT> getAggregatingState(AggregatingState<IN, OUT>)`
 * `FoldingState<T, ACC> getFoldingState(FoldingStateDescriptor<T, ACC>)`
 * `MapState<UK, UV> getMapState(MapStateDescriptor<UK, UV>)`
 
@@ -327,8 +331,7 @@ the basic even-split redistribution list state:
 {% highlight java %}
 public class BufferingSink
         implements SinkFunction<Tuple2<String, Integer>>,
-                   CheckpointedFunction,
-                   CheckpointedRestoring<ArrayList<Tuple2<String, Integer>>> {
+                   CheckpointedFunction {
 
     private final int threshold;
 
@@ -365,7 +368,7 @@ public class BufferingSink
         ListStateDescriptor<Tuple2<String, Integer>> descriptor =
             new ListStateDescriptor<>(
                 "buffered-elements",
-                TypeInformation.of(new TypeHint<Tuple2<Long, Long>>() {}));
+                TypeInformation.of(new TypeHint<Tuple2<String, Integer>>() {}));
 
         checkpointedState = context.getOperatorStateStore().getListState(descriptor);
 
@@ -375,12 +378,6 @@ public class BufferingSink
             }
         }
     }
-
-    @Override
-    public void restoreState(ArrayList<Tuple2<String, Integer>> state) throws Exception {
-        // this is from the CheckpointedRestoring interface.
-        this.bufferedElements.addAll(state);
-    }
 }
 {% endhighlight %}
 </div>
@@ -389,11 +386,10 @@ public class BufferingSink
 {% highlight scala %}
 class BufferingSink(threshold: Int = 0)
   extends SinkFunction[(String, Int)]
-    with CheckpointedFunction
-    with CheckpointedRestoring[List[(String, Int)]] {
+    with CheckpointedFunction {
 
   @transient
-  private var checkpointedState: ListState[(String, Int)] = null
+  private var checkpointedState: ListState[(String, Int)] = _
 
   private val bufferedElements = ListBuffer[(String, Int)]()
 
@@ -429,9 +425,6 @@ class BufferingSink(threshold: Int = 0)
     }
   }
 
-  override def restoreState(state: List[(String, Int)]): Unit = {
-    bufferedElements ++= state
-  }
 }
 {% endhighlight %}
 </div>
@@ -594,3 +587,5 @@ class CounterSource
 </div>
 
 Some operators might need the information when a checkpoint is fully acknowledged by Flink to communicate that with the outside world. In this case see the `org.apache.flink.runtime.state.CheckpointListener` interface.
+
+{% top %}

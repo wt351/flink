@@ -25,10 +25,10 @@ import akka.testkit.{ImplicitSender, TestKit}
 import akka.util.Timeout
 import org.apache.flink.api.common.JobID
 import org.apache.flink.runtime.akka.ListeningBehaviour
-import org.apache.flink.runtime.checkpoint.{CheckpointCoordinator, CompletedCheckpoint}
+import org.apache.flink.runtime.checkpoint._
 import org.apache.flink.runtime.client.JobExecutionException
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType
-import org.apache.flink.runtime.jobgraph.tasks.{ExternalizedCheckpointSettings, JobCheckpointingSettings}
+import org.apache.flink.runtime.jobgraph.tasks.{CheckpointCoordinatorConfiguration, JobCheckpointingSettings}
 import org.apache.flink.runtime.jobgraph.{DistributionPattern, JobGraph, JobVertex, ScheduleMode}
 import org.apache.flink.runtime.jobmanager.Tasks._
 import org.apache.flink.runtime.jobmanager.scheduler.{NoResourceAvailableException, SlotSharingGroup}
@@ -812,7 +812,7 @@ class JobManagerITCase(_system: ActorSystem)
           // Verify the response
           response.jobId should equal(jobGraph.getJobID())
           response.cause.getClass should equal(classOf[IllegalStateException])
-          response.cause.getMessage should (include("disabled") or include("configured"))
+          response.cause.getMessage should include("not a streaming job")
         }
       }
       finally {
@@ -837,13 +837,14 @@ class JobManagerITCase(_system: ActorSystem)
             java.util.Collections.emptyList(),
             java.util.Collections.emptyList(),
             java.util.Collections.emptyList(),
-            60000,
-            60000,
-            60000,
-            1,
-            ExternalizedCheckpointSettings.none,
-            null,
-            true))
+            new CheckpointCoordinatorConfiguration(
+              60000,
+              60000,
+              60000,
+              1,
+              CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION,
+              true),
+            null))
 
           // Submit job...
           jobManager.tell(SubmitJob(jobGraph, ListeningBehaviour.DETACHED), testActor)
@@ -856,7 +857,7 @@ class JobManagerITCase(_system: ActorSystem)
 
           // Mock the checkpoint coordinator
           val checkpointCoordinator = mock(classOf[CheckpointCoordinator])
-          doThrow(new Exception("Expected Test Exception"))
+          doThrow(new IllegalStateException("Expected Test Exception"))
             .when(checkpointCoordinator)
             .triggerSavepoint(org.mockito.Matchers.anyLong(), org.mockito.Matchers.anyString())
 
@@ -871,7 +872,7 @@ class JobManagerITCase(_system: ActorSystem)
 
           // Verify the response
           response.jobId should equal(jobGraph.getJobID())
-          response.cause.getCause.getClass should equal(classOf[Exception])
+          response.cause.getCause.getClass should equal(classOf[IllegalStateException])
           response.cause.getCause.getMessage should equal("Expected Test Exception")
         }
       }
@@ -897,13 +898,14 @@ class JobManagerITCase(_system: ActorSystem)
             java.util.Collections.emptyList(),
             java.util.Collections.emptyList(),
             java.util.Collections.emptyList(),
-            60000,
-            60000,
-            60000,
-            1,
-            ExternalizedCheckpointSettings.none,
-            null,
-            true))
+            new CheckpointCoordinatorConfiguration(
+              60000,
+              60000,
+              60000,
+              1,
+              CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION,
+              true),
+            null))
 
           // Submit job...
           jobManager.tell(SubmitJob(jobGraph, ListeningBehaviour.DETACHED), testActor)
@@ -911,7 +913,7 @@ class JobManagerITCase(_system: ActorSystem)
 
           // Mock the checkpoint coordinator
           val checkpointCoordinator = mock(classOf[CheckpointCoordinator])
-          doThrow(new Exception("Expected Test Exception"))
+          doThrow(new IllegalStateException("Expected Test Exception"))
             .when(checkpointCoordinator)
             .triggerSavepoint(org.mockito.Matchers.anyLong(), org.mockito.Matchers.anyString())
           val savepointPathPromise = new CompletableFuture[CompletedCheckpoint]()
@@ -965,13 +967,14 @@ class JobManagerITCase(_system: ActorSystem)
             java.util.Collections.emptyList(),
             java.util.Collections.emptyList(),
             java.util.Collections.emptyList(),
-            60000,
-            60000,
-            60000,
-            1,
-            ExternalizedCheckpointSettings.none,
-            null,
-            true))
+            new CheckpointCoordinatorConfiguration(
+              60000,
+              60000,
+              60000,
+              1,
+              CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION,
+              true),
+            null))
 
           // Submit job...
           jobManager.tell(SubmitJob(jobGraph, ListeningBehaviour.DETACHED), testActor)
@@ -979,7 +982,7 @@ class JobManagerITCase(_system: ActorSystem)
 
           // Mock the checkpoint coordinator
           val checkpointCoordinator = mock(classOf[CheckpointCoordinator])
-          doThrow(new Exception("Expected Test Exception"))
+          doThrow(new IllegalStateException("Expected Test Exception"))
             .when(checkpointCoordinator)
             .triggerSavepoint(org.mockito.Matchers.anyLong(), org.mockito.Matchers.anyString())
 

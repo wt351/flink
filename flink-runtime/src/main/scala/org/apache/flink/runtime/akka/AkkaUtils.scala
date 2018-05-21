@@ -26,7 +26,7 @@ import akka.actor._
 import akka.pattern.{ask => akkaAsk}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.flink.api.common.time.Time
-import org.apache.flink.configuration.{AkkaOptions, Configuration, SecurityOptions}
+import org.apache.flink.configuration.{AkkaOptions, Configuration, IllegalConfigurationException, SecurityOptions}
 import org.apache.flink.runtime.net.SSLUtils
 import org.apache.flink.util.NetUtils
 import org.jboss.netty.channel.ChannelException
@@ -200,6 +200,9 @@ object AkkaUtils {
 
     val logLevel = getLogLevel
 
+    val supervisorStrategy = classOf[StoppingSupervisorWithoutLoggingActorKilledExceptionStrategy]
+      .getCanonicalName
+
     val config =
       s"""
         |akka {
@@ -220,7 +223,10 @@ object AkkaUtils {
         | log-dead-letters-during-shutdown = $logLifecycleEvents
         |
         | actor {
-        |   guardian-supervisor-strategy = "akka.actor.StoppingSupervisorStrategy"
+        |   guardian-supervisor-strategy = $supervisorStrategy
+        |
+        |   warn-about-java-serializer-usage = off
+        |
         |   default-dispatcher {
         |     throughput = $akkaThroughput
         |
@@ -243,7 +249,7 @@ object AkkaUtils {
          |    default-dispatcher {
          |      fork-join-executor {
          |        parallelism-factor = 1.0
-         |        parallelism-min = 1
+         |        parallelism-min = 2
          |        parallelism-max = 4
          |      }
          |    }
@@ -252,6 +258,20 @@ object AkkaUtils {
       """.stripMargin
 
     ConfigFactory.parseString(config)
+  }
+
+  private def validateHeartbeat(pauseParamName: String,
+                                pauseValue: String,
+                                intervalParamName: String,
+                                intervalValue: String) = {
+    if (Duration.apply(pauseValue).lteq(Duration.apply(intervalValue))) {
+      throw new IllegalConfigurationException(
+        "%s [%s] must greater then %s [%s]",
+        pauseParamName,
+        pauseValue,
+        intervalParamName,
+        intervalValue)
+    }
   }
 
   /**
@@ -265,9 +285,14 @@ object AkkaUtils {
    * @param externalPort The port to expect for Akka messages
    * @return Flink's Akka configuration for remote actor systems
    */
-  private def getRemoteAkkaConfig(configuration: Configuration,
-                                  bindAddress: String, port: Int,
-                                  externalHostname: String, externalPort: Int): Config = {
+  private def getRemoteAkkaConfig(
+      configuration: Configuration,
+      bindAddress: String,
+      port: Int,
+      externalHostname: String,
+      externalPort: Int): Config = {
+
+    val normalizedExternalHostname = NetUtils.unresolvedHostToNormalizedString(externalHostname)
 
     val akkaAskTimeout = Duration(configuration.getString(AkkaOptions.ASK_TIMEOUT))
 
@@ -281,12 +306,24 @@ object AkkaUtils {
     val transportHeartbeatPause = configuration.getString(
       AkkaOptions.TRANSPORT_HEARTBEAT_PAUSE)
 
+    validateHeartbeat(
+      AkkaOptions.TRANSPORT_HEARTBEAT_PAUSE.key(),
+      transportHeartbeatPause,
+      AkkaOptions.TRANSPORT_HEARTBEAT_INTERVAL.key(),
+      transportHeartbeatInterval)
+
     val transportThreshold = configuration.getDouble(AkkaOptions.TRANSPORT_THRESHOLD)
 
     val watchHeartbeatInterval = configuration.getString(
       AkkaOptions.WATCH_HEARTBEAT_INTERVAL)
 
     val watchHeartbeatPause = configuration.getString(AkkaOptions.WATCH_HEARTBEAT_PAUSE)
+
+    validateHeartbeat(
+      AkkaOptions.WATCH_HEARTBEAT_PAUSE.key(),
+      watchHeartbeatPause,
+      AkkaOptions.WATCH_HEARTBEAT_INTERVAL.key(),
+      watchHeartbeatInterval)
 
     val watchThreshold = configuration.getInteger(AkkaOptions.WATCH_THRESHOLD)
 
@@ -300,6 +337,8 @@ object AkkaUtils {
 
     val akkaEnableSSLConfig = configuration.getBoolean(AkkaOptions.SSL_ENABLED) &&
           SSLUtils.getSSLEnabled(configuration)
+
+    val retryGateClosedFor = configuration.getLong(AkkaOptions.RETRY_GATE_CLOSED_FOR)
 
     val akkaEnableSSL = if (akkaEnableSSLConfig) "on" else "off"
 
@@ -352,13 +391,15 @@ object AkkaUtils {
          |    }
          |
          |    log-remote-lifecycle-events = $logLifecycleEvents
+         |
+         |    retry-gate-closed-for = ${retryGateClosedFor + " ms"}
          |  }
          |}
        """.stripMargin
 
     val effectiveHostname =
-      if (externalHostname != null && externalHostname.nonEmpty) {
-        externalHostname
+      if (normalizedExternalHostname != null && normalizedExternalHostname.nonEmpty) {
+        normalizedExternalHostname
       } else {
         // if bindAddress is null or empty, then leave bindAddress unspecified. Akka will pick
         // InetAddress.getLocalHost.getHostAddress
@@ -547,7 +588,7 @@ object AkkaUtils {
    * @param tries maximum number of tries before the future fails
    * @param executionContext which shall execute the future
    * @param timeout of the future
-   * @return future which tries to receover by re-executing itself a given number of times
+   * @return future which tries to recover by re-executing itself a given number of times
    */
   def retry(target: ActorRef, message: Any, tries: Int)(implicit executionContext:
   ExecutionContext, timeout: FiniteDuration): Future[Any] = {
@@ -653,21 +694,15 @@ object AkkaUtils {
     * @return The InetSocketAddress with teh extracted host and port.
     */
   @throws(classOf[Exception])
-  def getInetSockeAddressFromAkkaURL(akkaURL: String): InetSocketAddress = {
+  def getInetSocketAddressFromAkkaURL(akkaURL: String): InetSocketAddress = {
     // AkkaURLs have the form schema://systemName@host:port/.... if it's a remote Akka URL
     try {
-      // we need to manually strip the protocol, because "akka.tcp" is not
-      // a valid protocol for Java's URL class
-      val protocolonPos = akkaURL.indexOf("://")
-      if (protocolonPos == -1 || protocolonPos >= akkaURL.length - 4) {
-        throw new MalformedURLException()
+      val address = getAddressFromAkkaURL(akkaURL)
+
+      (address.host, address.port) match {
+        case (Some(hostname), Some(portValue)) => new InetSocketAddress(hostname, portValue)
+        case _ => throw new MalformedURLException()
       }
-      
-      val url = new URL("http://" + akkaURL.substring(protocolonPos + 3))
-      if (url.getHost == null || url.getPort == -1) {
-        throw new MalformedURLException()
-      }
-      new InetSocketAddress(url.getHost, url.getPort)
     }
     catch {
       case _ : MalformedURLException =>
@@ -675,7 +710,20 @@ object AkkaUtils {
     }
   }
 
-  def formatDurationParingErrorMessage: String = {
+  /**
+    * Extracts the [[Address]] from the given akka URL.
+    *
+    * @param akkaURL to extract the [[Address]] from
+    * @throws java.net.MalformedURLException if the [[Address]] could not be parsed from
+    *                                        the given akka URL
+    * @return Extracted [[Address]] from the given akka URL
+    */
+  @throws(classOf[MalformedURLException])
+  def getAddressFromAkkaURL(akkaURL: String): Address = {
+    AddressFromURIString(akkaURL)
+  }
+
+  def formatDurationParsingErrorMessage: String = {
     "Duration format must be \"val unit\", where 'val' is a number and 'unit' is " +
       "(d|day)|(h|hour)|(min|minute)|s|sec|second)|(ms|milli|millisecond)|" +
       "(µs|micro|microsecond)|(ns|nano|nanosecond)"
@@ -697,8 +745,8 @@ object AkkaUtils {
     * @param fn The function to retry
     * @param stopCond Flag to signal termination
     * @param maxSleepBetweenRetries Max random sleep time between retries
-    * @tparam T Return type of the the function to retry
-    * @return Return value of the the function to retry
+    * @tparam T Return type of the function to retry
+    * @return Return value of the function to retry
     */
   @tailrec
   def retryOnBindException[T](

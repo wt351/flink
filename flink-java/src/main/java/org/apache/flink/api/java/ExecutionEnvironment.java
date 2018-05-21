@@ -33,7 +33,6 @@ import org.apache.flink.api.common.operators.OperatorInformation;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.java.hadoop.mapred.HadoopInputFormat;
 import org.apache.flink.api.java.io.CollectionInputFormat;
 import org.apache.flink.api.java.io.CsvReader;
 import org.apache.flink.api.java.io.IteratorInputFormat;
@@ -53,6 +52,7 @@ import org.apache.flink.api.java.typeutils.ValueTypeInfo;
 import org.apache.flink.api.java.typeutils.runtime.kryo.Serializers;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.types.StringValue;
 import org.apache.flink.util.NumberSequenceIterator;
@@ -61,8 +61,6 @@ import org.apache.flink.util.SplittableIterator;
 import org.apache.flink.util.Visitor;
 
 import com.esotericsoftware.kryo.Serializer;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapreduce.Job;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -582,109 +580,6 @@ public abstract class ExecutionEnvironment {
 		return new DataSource<>(this, inputFormat, producedType, Utils.getCallLocationName());
 	}
 
-	// ----------------------------------- Hadoop Input Format ---------------------------------------
-
-	/**
-	 * Creates a {@link DataSet} from the given {@link org.apache.hadoop.mapred.FileInputFormat}.
-	 *
-	 * @deprecated Please use {@code org.apache.flink.hadoopcompatibility.HadoopInputs#readHadoopFile(org.apache.hadoop.mapred.FileInputFormat<K,V>, Class<K>, Class<V>, String, JobConf)}
-	 * from the flink-hadoop-compatibility module.
-	 */
-	@Deprecated
-	@PublicEvolving
-	public <K, V> DataSource<Tuple2<K, V>> readHadoopFile(org.apache.hadoop.mapred.FileInputFormat<K, V> mapredInputFormat, Class<K> key, Class<V> value, String inputPath, JobConf job) {
-		DataSource<Tuple2<K, V>> result = createHadoopInput(mapredInputFormat, key, value, job);
-
-		org.apache.hadoop.mapred.FileInputFormat.addInputPath(job, new org.apache.hadoop.fs.Path(inputPath));
-
-		return result;
-	}
-
-	/**
-	 * Creates a {@link DataSet} from {@link org.apache.hadoop.mapred.SequenceFileInputFormat}
-	 * A {@link org.apache.hadoop.mapred.JobConf} with the given inputPath is created.
-	 *
-	 * @deprecated Please use {@code org.apache.flink.hadoopcompatibility.HadoopInputs#readSequenceFile(Class<K>, Class<V>, String)}
-	 * from the flink-hadoop-compatibility module.
-	 */
-	@Deprecated
-	@PublicEvolving
-	public <K, V> DataSource<Tuple2<K, V>> readSequenceFile(Class<K> key, Class<V> value, String inputPath) throws IOException {
-		return readHadoopFile(new org.apache.hadoop.mapred.SequenceFileInputFormat<K, V>(), key, value, inputPath);
-	}
-
-	/**
-	 * Creates a {@link DataSet} from the given {@link org.apache.hadoop.mapred.FileInputFormat}. A
-	 * {@link org.apache.hadoop.mapred.JobConf} with the given inputPath is created.
-	 *
-	 * @deprecated Please use {@code org.apache.flink.hadoopcompatibility.HadoopInputs#readHadoopFile(org.apache.hadoop.mapred.FileInputFormat<K,V>, Class<K>, Class<V>, String)}
-	 * from the flink-hadoop-compatibility module.
-	 */
-	@Deprecated
-	@PublicEvolving
-	public <K, V> DataSource<Tuple2<K, V>> readHadoopFile(org.apache.hadoop.mapred.FileInputFormat<K, V> mapredInputFormat, Class<K> key, Class<V> value, String inputPath) {
-		return readHadoopFile(mapredInputFormat, key, value, inputPath, new JobConf());
-	}
-
-	/**
-	 * Creates a {@link DataSet} from the given {@link org.apache.hadoop.mapred.InputFormat}.
-	 *
-	 * @deprecated Please use {@code org.apache.flink.hadoopcompatibility.HadoopInputs#createHadoopInput(org.apache.hadoop.mapred.InputFormat<K,V>, Class<K>, Class<V>, JobConf)}
-	 * from the flink-hadoop-compatibility module.
-	 */
-	@Deprecated
-	@PublicEvolving
-	public <K, V> DataSource<Tuple2<K, V>> createHadoopInput(org.apache.hadoop.mapred.InputFormat<K, V> mapredInputFormat, Class<K> key, Class<V> value, JobConf job) {
-		HadoopInputFormat<K, V> hadoopInputFormat = new HadoopInputFormat<>(mapredInputFormat, key, value, job);
-
-		return this.createInput(hadoopInputFormat);
-	}
-
-	/**
-	 * Creates a {@link DataSet} from the given {@link org.apache.hadoop.mapreduce.lib.input.FileInputFormat}. The
-	 * given inputName is set on the given job.
-	 *
-	 * @deprecated Please use {@code org.apache.flink.hadoopcompatibility.HadoopInputs#readHadoopFile(org.apache.hadoop.mapreduce.lib.input.FileInputFormat<K,V>, Class<K>, Class<V>, String, Job)}
-	 * from the flink-hadoop-compatibility module.
-	 */
-	@Deprecated
-	@PublicEvolving
-	public <K, V> DataSource<Tuple2<K, V>> readHadoopFile(org.apache.hadoop.mapreduce.lib.input.FileInputFormat<K, V> mapreduceInputFormat, Class<K> key, Class<V> value, String inputPath, Job job) throws IOException {
-		DataSource<Tuple2<K, V>> result = createHadoopInput(mapreduceInputFormat, key, value, job);
-
-		org.apache.hadoop.mapreduce.lib.input.FileInputFormat.addInputPath(job, new org.apache
-				.hadoop.fs.Path(inputPath));
-
-		return result;
-	}
-
-	/**
-	 * Creates a {@link DataSet} from the given {@link org.apache.hadoop.mapreduce.lib.input.FileInputFormat}. A
-	 * {@link org.apache.hadoop.mapreduce.Job} with the given inputPath is created.
-	 *
-	 * @deprecated Please use {@code  org.apache.flink.hadoopcompatibility.HadoopInputs#readHadoopFile(org.apache.hadoop.mapreduce.lib.input.FileInputFormat<K,V>, Class<K>, Class<V>, String)}
-	 * from the flink-hadoop-compatibility module.
-	 */
-	@Deprecated
-	@PublicEvolving
-	public <K, V> DataSource<Tuple2<K, V>> readHadoopFile(org.apache.hadoop.mapreduce.lib.input.FileInputFormat<K, V> mapreduceInputFormat, Class<K> key, Class<V> value, String inputPath) throws IOException {
-		return readHadoopFile(mapreduceInputFormat, key, value, inputPath, Job.getInstance());
-	}
-
-	/**
-	 * Creates a {@link DataSet} from the given {@link org.apache.hadoop.mapreduce.InputFormat}.
-	 *
-	 * @deprecated Please use {@code org.apache.flink.hadoopcompatibility.HadoopInputs#createHadoopInput(org.apache.hadoop.mapreduce.InputFormat<K,V>, Class<K>, Class<V>, Job)}
-	 * from the flink-hadoop-compatibility module.
-	 */
-	@Deprecated
-	@PublicEvolving
-	public <K, V> DataSource<Tuple2<K, V>> createHadoopInput(org.apache.hadoop.mapreduce.InputFormat<K, V> mapreduceInputFormat, Class<K> key, Class<V> value, Job job) {
-		org.apache.flink.api.java.hadoop.mapreduce.HadoopInputFormat<K, V> hadoopInputFormat = new org.apache.flink.api.java.hadoop.mapreduce.HadoopInputFormat<>(mapreduceInputFormat, key, value, job);
-
-		return this.createInput(hadoopInputFormat);
-	}
-
 	// ----------------------------------- Collection ---------------------------------------
 
 	/**
@@ -1199,9 +1094,7 @@ public abstract class ExecutionEnvironment {
 	 * @return A local execution environment with the specified parallelism.
 	 */
 	public static LocalEnvironment createLocalEnvironment(int parallelism) {
-		LocalEnvironment lee = new LocalEnvironment();
-		lee.setParallelism(parallelism);
-		return lee;
+		return createLocalEnvironment(new Configuration(), parallelism);
 	}
 
 	/**
@@ -1213,7 +1106,7 @@ public abstract class ExecutionEnvironment {
 	 * @return A local execution environment with the specified parallelism.
 	 */
 	public static LocalEnvironment createLocalEnvironment(Configuration customConfiguration) {
-		return new LocalEnvironment(customConfiguration);
+		return createLocalEnvironment(customConfiguration, -1);
 	}
 
 	/**
@@ -1224,7 +1117,7 @@ public abstract class ExecutionEnvironment {
 	 * the same JVM as the environment was created in. It will use the parallelism specified in the
 	 * parameter.
 	 *
-	 * <p>If the configuration key 'jobmanager.web.port' was set in the configuration, that particular
+	 * <p>If the configuration key 'rest.port' was set in the configuration, that particular
 	 * port will be used for the web UI. Otherwise, the default port (8081) will be used.
 	 */
 	@PublicEvolving
@@ -1233,10 +1126,29 @@ public abstract class ExecutionEnvironment {
 
 		conf.setBoolean(ConfigConstants.LOCAL_START_WEBSERVER, true);
 
-		LocalEnvironment localEnv = new LocalEnvironment(conf);
-		localEnv.setParallelism(defaultLocalDop);
+		if (!conf.contains(RestOptions.PORT)) {
+			// explicitly set this option so that it's not set to 0 later
+			conf.setInteger(RestOptions.PORT, RestOptions.PORT.defaultValue());
+		}
 
-		return localEnv;
+		return createLocalEnvironment(conf, -1);
+	}
+
+	/**
+	 * Creates a {@link LocalEnvironment} which is used for executing Flink jobs.
+	 *
+	 * @param configuration to start the {@link LocalEnvironment} with
+	 * @param defaultParallelism to initialize the {@link LocalEnvironment} with
+	 * @return {@link LocalEnvironment}
+	 */
+	private static LocalEnvironment createLocalEnvironment(Configuration configuration, int defaultParallelism) {
+		final LocalEnvironment localEnvironment = new LocalEnvironment(configuration);
+
+		if (defaultParallelism > 0) {
+			localEnvironment.setParallelism(defaultParallelism);
+		}
+
+		return localEnvironment;
 	}
 
 	/**
